@@ -1,0 +1,17 @@
+# Data files
+*.csv
+*.xlsx
+*.zip
+
+# R artifacts
+.Rhistory
+Rplots.pdf
+*.RData
+*.rds
+
+# Webapp (separate deployment)
+webapp/
+
+# Other
+test.txt
+*.pdf
