@@ -104,52 +104,65 @@ def _save_fig(fig) -> str:
 
 
 def figure_curve(panel, result) -> str:
-    """P(b) curve with observed data points and residuals."""
-    a0, ab = result["a0"], result["ab"]
-    b_star = result["b_star"]
-    EP_m   = panel["EP"].mean()
-    ROI_m  = panel["ROI"].mean()
-    E_m    = panel["EPS"].mean()
+    """
+    Left:  Year-specific P(b) curves (same a0, ab; each year's own EP_t, ROI_t, EPS_t).
+           Observed price shown as filled dot on each year's curve.
+           b* marked with a dashed vertical line.
 
-    b_grid = np.linspace(0.01, min(ab * 0.99, 0.92), 600)
-    r_grid = compute_r(b_grid, EP_m, ROI_m)
-    a_grid = a0 * (1.0 - b_grid / ab)
-    denom  = r_grid - b_grid * (r_grid + a_grid)
-    P_grid = np.where(denom > 0, E_m * (1.0 - b_grid) / denom, np.nan)
+    Right: a(b) fitted line with per-year residuals.
+    """
+    a0, ab   = result["a0"], result["ab"]
+    b_star   = result["b_star"]
+    years    = panel["date"].dt.year.tolist()
+    l_vals   = result["residuals"]
+    pt_colors = ["#C0392B" if l > 1e-4 else "#1E8449" if l < -1e-4
+                 else "#888888" for l in l_vals]
+
+    yr_palette = ["#2E86AB", "#A23B72", "#F18F01", "#C73E1D"]
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     fig.patch.set_facecolor("white")
 
-    # ── Left: P(b) curve ─────────────────────────────────────────────────────
+    # ── Left: year-specific P(b) curves ──────────────────────────────────────
     ax = axes[0]
-    ax.plot(b_grid, P_grid, color="#2E86AB", lw=2.2, label="P(b) — model curve")
-    ax.axvline(b_star, color="#1E8449", lw=1.4, ls="--",
-               label=f"b* = {b_star:.3f}  (value-maximising)")
+    b_grid = np.linspace(0.01, 0.97, 800)
 
-    years = panel["date"].dt.year.tolist()
-    l_vals = result["residuals"]
-    pt_colors = ["#C0392B" if l > 1e-4 else "#1E8449" if l < -1e-4
-                 else "#888888" for l in l_vals]
+    p_max = max(panel["price"])
 
     for i, row in panel.iterrows():
-        b_i = result["b_used"][i]
-        ax.scatter(b_i, row["price"], color=pt_colors[i],
-                   s=70, zorder=6, edgecolors="white", linewidths=0.8)
-        sign = "+" if l_vals[i] >= 0 else ""
-        ax.annotate(f"FY{years[i]}\nl={sign}{l_vals[i]:.4f}",
-                    xy=(b_i, row["price"]),
-                    xytext=(8, 6), textcoords="offset points",
-                    fontsize=7.5, color=pt_colors[i],
-                    arrowprops=dict(arrowstyle="-", color=pt_colors[i],
-                                   lw=0.6))
+        ep_i  = row["EP"]
+        roi_i = row["ROI"]
+        eps_i = row["EPS"]
+        col   = yr_palette[i % len(yr_palette)]
 
+        r_grid = compute_r(b_grid, ep_i, roi_i)
+        a_grid = a0 * (1.0 - b_grid / ab)
+        denom  = r_grid - b_grid * (r_grid + a_grid)
+        P_grid = np.where(denom > 1e-6, eps_i * (1.0 - b_grid) / denom, np.nan)
+        # Clip to sensible display range
+        P_grid = np.where(P_grid > p_max * 2.5, np.nan, P_grid)
+
+        ax.plot(b_grid, P_grid, color=col, lw=1.6, alpha=0.75,
+                label=f"FY{years[i]}")
+        # Observed price dot
+        b_obs = result["b_used"][i]
+        ax.scatter(b_obs, row["price"], s=90, color=col, zorder=8,
+                   edgecolors="white", linewidths=1.0)
+        ax.annotate(f"FY{years[i]}", xy=(b_obs, row["price"]),
+                    xytext=(6, 4), textcoords="offset points",
+                    fontsize=7.5, color=col, fontweight="bold")
+
+    ax.axvline(b_star, color="#555555", lw=1.3, ls="--", alpha=0.7,
+               label=f"b* = {b_star:.3f}")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, p_max * 2.2)
     ax.set_xlabel("Plowback ratio  b", fontsize=9)
-    ax.set_ylabel("Stock price  P(b)  (USD)", fontsize=9)
-    ax.set_title("Gordon Growth Curve — MSFT", fontsize=10, fontweight="bold",
-                 color="#1B3A6B")
+    ax.set_ylabel("Stock price  P  ($)", fontsize=9)
+    ax.set_title("P(b) — MSFT Pricing Curve by Year\n"
+                 "(a₀, aᵦ global; each year's own EP, ROI, EPS)",
+                 fontsize=9.5, fontweight="bold", color="#1B3A6B")
     ax.legend(fontsize=8, framealpha=0.85)
     ax.grid(True, alpha=0.25, lw=0.6)
-    ax.set_xlim(0.0, 0.75)
     ax.tick_params(labelsize=8)
 
     # ── Right: a(b) with residuals ────────────────────────────────────────────
@@ -607,11 +620,12 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
     story += [
         Image(fig1_path, width=TEXT_W, height=TEXT_W * 5 / 13),
         P(
-            "<b>Figure 1.</b>  Left: P(b) curve with MSFT fiscal-year observations. "
-            "Red dots signal a perceived disadvantage (l > 0); green a perceived "
-            "advantage (l < 0). The dashed green line marks b* = 0.284. "
-            "Right: adaptive parameter a(b) with per-year residuals l shown "
-            "as vertical segments between the fitted curve and the required value.",
+            "<b>Figure 1.</b>  Left: year-specific P(b) curves — the same estimated "
+            "a₀ and aᵦ applied to each fiscal year's own EP, ROI, and EPS. Filled "
+            "dots are observed prices; the dashed line marks b* = 0.284. "
+            "Right: adaptive parameter a(b) = a₀·(1 − b/aᵦ) with per-year residuals "
+            "l shown as vertical segments between the fitted curve and the required "
+            "value (red = disadvantage, green = advantage).",
             "caption",
         ),
         SP(0.6),
