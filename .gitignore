@@ -15,3 +15,4 @@ webapp/
 # Other
 test.txt
 *.pdf
+__pycache__/
