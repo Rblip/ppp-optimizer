@@ -16,3 +16,4 @@ webapp/
 test.txt
 *.pdf
 __pycache__/
+msft_curve_report.pdf
