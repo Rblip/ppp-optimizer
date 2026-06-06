@@ -215,7 +215,7 @@ def fit_constrained(ticker: str,
     if n < 3:
         raise ValueError(f"{ticker}: only {n} valid observations after cleaning")
 
-    # ── Objective: sum of squared residuals ───────────────────────────────────
+    # ── Objective: sum of squared residuals in a-space ────────────────────────
     def sse(params: np.ndarray) -> float:
         a0, ab = params
         if ab < 1e-8:

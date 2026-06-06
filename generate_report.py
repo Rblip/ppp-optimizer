@@ -105,10 +105,9 @@ def _save_fig(fig) -> str:
 
 def figure_curve(panel, result) -> str:
     """
-    Left:  Single global P(b) curve using mean EP, ROI, EPS across years.
-           y-axis clipped at 1.6× max observed price; region where the curve
-           exceeds the display range (near b*) is shaded. Observed prices
-           shown as coloured dots.
+    Left:  Year-specific P(b) curves — shared a0, ab; each year's own EP, ROI, EPS.
+           Observed prices as filled dots. Trajectory arrow from FY2022→FY2025
+           shows that curve upshift (EPS growth) explains rising P despite b > b*.
 
     Right: a(b) fitted line with per-year residuals.
     """
@@ -119,59 +118,62 @@ def figure_curve(panel, result) -> str:
     pt_colors = ["#C0392B" if l > 1e-4 else "#1E8449" if l < -1e-4
                  else "#888888" for l in l_vals]
 
-    EP_m  = float(np.mean(panel["EP"].values))
-    ROI_m = float(np.mean(panel["ROI"].values))
-    E_m   = float(np.mean(panel["EPS"].values))
+    yr_palette = ["#2E86AB", "#A23B72", "#F18F01", "#C73E1D"]
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     fig.patch.set_facecolor("white")
 
-    # ── Left: single global P(b) curve ───────────────────────────────────────
+    # ── Left: year-specific P(b) curves ──────────────────────────────────────
     ax = axes[0]
-    b_grid = np.linspace(0.01, 0.97, 1200)
-    r_grid = compute_r(b_grid, EP_m, ROI_m)
-    a_grid = a0 * (1.0 - b_grid / ab)
-    denom  = r_grid - b_grid * (r_grid + a_grid)
-    P_full = np.where(denom > 1e-8, E_m * (1.0 - b_grid) / denom, np.nan)
+    b_grid = np.linspace(0.01, 0.97, 800)
+    p_max  = float(max(panel["price"]))
 
-    p_max_obs = float(max(panel["price"]))
-    y_max     = p_max_obs * 1.6
-
-    # Curve visible below clip limit
-    P_vis = np.where(P_full <= y_max, P_full, np.nan)
-    ax.plot(b_grid, P_vis, color="#2E86AB", lw=2.2,
-            label="P(b)  [mean EP, ROI, EPS]")
-
-    # Shade region where curve exceeds display (near b*)
-    off_mask = np.isfinite(P_full) & (P_full > y_max)
-    if off_mask.any():
-        b_lo = b_grid[off_mask].min()
-        b_hi = b_grid[off_mask].max()
-        ax.axvspan(b_lo, b_hi, alpha=0.10, color="#2E86AB", zorder=0,
-                   label="P → ∞  (off scale)")
-        ax.annotate("P → ∞", xy=((b_lo + b_hi) / 2, y_max * 0.97),
-                    ha="center", va="top", fontsize=7.5,
-                    color="#2E86AB", fontstyle="italic")
-
-    # b* dashed line
-    ax.axvline(b_star, color="#555555", lw=1.3, ls="--",
-               label=f"b* = {b_star:.3f}")
-
-    # Observed prices
+    obs_b, obs_p = [], []
     for i, row in panel.iterrows():
-        b_i = result["b_used"][i]
-        ax.scatter(b_i, row["price"], s=90, color=pt_colors[i], zorder=8,
-                   edgecolors="white", linewidths=1.0)
-        ax.annotate(f"FY{years[i]}", xy=(b_i, row["price"]),
-                    xytext=(6, 4), textcoords="offset points",
-                    fontsize=7.5, color=pt_colors[i], fontweight="bold")
+        ep_i  = row["EP"]
+        roi_i = row["ROI"]
+        eps_i = row["EPS"]
+        col   = yr_palette[i % len(yr_palette)]
 
+        r_grid = compute_r(b_grid, ep_i, roi_i)
+        a_grid = a0 * (1.0 - b_grid / ab)
+        denom  = r_grid - b_grid * (r_grid + a_grid)
+        P_grid = np.where(denom > 1e-6, eps_i * (1.0 - b_grid) / denom, np.nan)
+        P_grid = np.where(P_grid > p_max * 2.5, np.nan, P_grid)
+
+        ax.plot(b_grid, P_grid, color=col, lw=1.6, alpha=0.75,
+                label=f"FY{years[i]}")
+
+        b_obs = float(result["b_used"][i])
+        p_obs = float(row["price"])
+        ax.scatter(b_obs, p_obs, s=90, color=col, zorder=8,
+                   edgecolors="white", linewidths=1.0)
+        ax.annotate(f"FY{years[i]}", xy=(b_obs, p_obs),
+                    xytext=(6, 4), textcoords="offset points",
+                    fontsize=7.5, color=col, fontweight="bold")
+        obs_b.append(b_obs)
+        obs_p.append(p_obs)
+
+    # Trajectory arrow FY2022 → FY2025 (EPS growth shifts curves up)
+    ax.annotate("", xy=(obs_b[-1], obs_p[-1]), xytext=(obs_b[0], obs_p[0]),
+                arrowprops=dict(arrowstyle="-|>", color="#555555",
+                                lw=1.4, connectionstyle="arc3,rad=0.18"))
+    mid_b = (obs_b[0] + obs_b[-1]) / 2 + 0.04
+    mid_p = (obs_p[0] + obs_p[-1]) / 2 - 20
+    eps_ratio = panel["EPS"].iloc[-1] / panel["EPS"].iloc[0]
+    ax.text(mid_b, mid_p,
+            f"EPS ×{eps_ratio:.2f}\nb: {obs_b[0]:.2f}→{obs_b[-1]:.2f}",
+            fontsize=7.5, color="#555555", ha="left",
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.7, ec="none"))
+
+    ax.axvline(b_star, color="#555555", lw=1.3, ls="--", alpha=0.7,
+               label=f"b* = {b_star:.3f}")
     ax.set_xlim(0, 1)
-    ax.set_ylim(0, y_max)
+    ax.set_ylim(0, p_max * 2.2)
     ax.set_xlabel("Plowback ratio  b", fontsize=9)
     ax.set_ylabel("Stock price  P  ($)", fontsize=9)
-    ax.set_title("P(b) — Global Pricing Curve  (a₀, aᵦ estimated, mean EP/ROI/EPS)\n"
-                 "Observed prices shown as dots; shaded region: curve off scale near b*",
+    ax.set_title("P(b) — Year-specific Curves  (global a₀, aᵦ)\n"
+                 "Arrow: EPS growth shifts curves up; b ↑ AND P ↑",
                  fontsize=9.0, fontweight="bold", color="#1B3A6B")
     ax.legend(fontsize=8, framealpha=0.85)
     ax.grid(True, alpha=0.25, lw=0.6)
@@ -620,6 +622,39 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
             "are essentially aligned; the capital-allocation policy is consistent "
             "with the firm's long-run reinvestment parameters."
         ),
+        SP(0.3),
+        P("5.3  Why Did Both b and P Rise? — Static vs Dynamic Interpretation", "h2"),
+        P(
+            "A striking feature of the data is that the plowback ratio <i>b</i> "
+            "rose from 0.30 in FY2022 to 0.58 in FY2025, yet the stock price "
+            "simultaneously rose from $248 to $493. "
+            "In the static model, moving b beyond b* = 0.28 should <i>reduce</i> "
+            "price, because additional retention exceeds the value-maximising point. "
+            "The apparent contradiction is resolved by recognising that P(b) is not "
+            "one fixed curve — it shifts upward every year as EPS grows."
+        ),
+        SP(0.2),
+        P(
+            "Between FY2022 and FY2025, MSFT's diluted EPS grew from $9.65 to "
+            "$13.64 — a 41% increase driven by Azure, Copilot, and the OpenAI "
+            "partnership. This EPS growth raises the <i>entire</i> P(b) curve: "
+            "P(b) = <b>E</b> · (1−b) / denom, so doubling E doubles the theoretical "
+            "price at every b. The upward shift of the curve from one fiscal year "
+            "to the next more than offsets the price drag from b exceeding b*."
+        ),
+        SP(0.2),
+        P(
+            "The residuals l capture the <i>static</i> mismatch: a positive l signals "
+            "that management is holding b above the curve's current optimum, "
+            "accepting a present-value discount on dividends in exchange for "
+            "future EPS growth. FY2023's negative l (advantage) is the exception: "
+            "the OpenAI commitment was priced by the market as a supernormal "
+            "reinvestment opportunity, causing the observed price to <i>exceed</i> "
+            "the static theoretical value. In subsequent years, as the bet matured "
+            "into revenue, l reverted to mildly positive — management reinvests "
+            "heavily but the market prices this as normal industrial-scale capex, "
+            "not a transformational opportunity."
+        ),
         PageBreak(),
     ]
 
@@ -632,12 +667,13 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
     story += [
         Image(fig1_path, width=TEXT_W, height=TEXT_W * 5 / 13),
         P(
-            "<b>Figure 1.</b>  Left: single global P(b) curve using mean EP, ROI, and "
-            "EPS. The blue shaded band near b* = 0.284 marks where P → ∞ "
-            "(off the display scale); the y-axis is clipped at 1.6× the maximum "
-            "observed price. Filled dots are observed MSFT prices (red = disadvantage, "
-            "green = advantage). Right: adaptive parameter a(b) = a₀·(1 − b/aᵦ) with "
-            "per-year residuals l shown as vertical segments.",
+            "<b>Figure 1.</b>  Left: year-specific P(b) curves sharing the same "
+            "global a₀ and aᵦ but each year's own EP, ROI, and EPS. Each observation "
+            "(filled dot) lies on or near its year's curve; the arrow traces MSFT's "
+            "dynamic path as EPS grew ×1.41 from FY2022 to FY2025 — curve upshifts "
+            "explain why P rose even as b moved further past b*. "
+            "Right: a(b) = a₀·(1 − b/aᵦ) with residuals l (vertical segments); "
+            "R² = 0.976 on the reinvestment-premium fit.",
             "caption",
         ),
         SP(0.6),
