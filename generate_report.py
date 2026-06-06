@@ -105,9 +105,10 @@ def _save_fig(fig) -> str:
 
 def figure_curve(panel, result) -> str:
     """
-    Left:  Year-specific P(b) curves (same a0, ab; each year's own EP_t, ROI_t, EPS_t).
-           Observed price shown as filled dot on each year's curve.
-           b* marked with a dashed vertical line.
+    Left:  Single global P(b) curve using mean EP, ROI, EPS across years.
+           y-axis clipped at 1.6× max observed price; region where the curve
+           exceeds the display range (near b*) is shaded. Observed prices
+           shown as coloured dots.
 
     Right: a(b) fitted line with per-year residuals.
     """
@@ -118,49 +119,60 @@ def figure_curve(panel, result) -> str:
     pt_colors = ["#C0392B" if l > 1e-4 else "#1E8449" if l < -1e-4
                  else "#888888" for l in l_vals]
 
-    yr_palette = ["#2E86AB", "#A23B72", "#F18F01", "#C73E1D"]
+    EP_m  = float(np.mean(panel["EP"].values))
+    ROI_m = float(np.mean(panel["ROI"].values))
+    E_m   = float(np.mean(panel["EPS"].values))
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     fig.patch.set_facecolor("white")
 
-    # ── Left: year-specific P(b) curves ──────────────────────────────────────
+    # ── Left: single global P(b) curve ───────────────────────────────────────
     ax = axes[0]
-    b_grid = np.linspace(0.01, 0.97, 800)
+    b_grid = np.linspace(0.01, 0.97, 1200)
+    r_grid = compute_r(b_grid, EP_m, ROI_m)
+    a_grid = a0 * (1.0 - b_grid / ab)
+    denom  = r_grid - b_grid * (r_grid + a_grid)
+    P_full = np.where(denom > 1e-8, E_m * (1.0 - b_grid) / denom, np.nan)
 
-    p_max = max(panel["price"])
+    p_max_obs = float(max(panel["price"]))
+    y_max     = p_max_obs * 1.6
 
-    for i, row in panel.iterrows():
-        ep_i  = row["EP"]
-        roi_i = row["ROI"]
-        eps_i = row["EPS"]
-        col   = yr_palette[i % len(yr_palette)]
+    # Curve visible below clip limit
+    P_vis = np.where(P_full <= y_max, P_full, np.nan)
+    ax.plot(b_grid, P_vis, color="#2E86AB", lw=2.2,
+            label="P(b)  [mean EP, ROI, EPS]")
 
-        r_grid = compute_r(b_grid, ep_i, roi_i)
-        a_grid = a0 * (1.0 - b_grid / ab)
-        denom  = r_grid - b_grid * (r_grid + a_grid)
-        P_grid = np.where(denom > 1e-6, eps_i * (1.0 - b_grid) / denom, np.nan)
-        # Clip to sensible display range
-        P_grid = np.where(P_grid > p_max * 2.5, np.nan, P_grid)
+    # Shade region where curve exceeds display (near b*)
+    off_mask = np.isfinite(P_full) & (P_full > y_max)
+    if off_mask.any():
+        b_lo = b_grid[off_mask].min()
+        b_hi = b_grid[off_mask].max()
+        ax.axvspan(b_lo, b_hi, alpha=0.10, color="#2E86AB", zorder=0,
+                   label="P → ∞  (off scale)")
+        ax.annotate("P → ∞", xy=((b_lo + b_hi) / 2, y_max * 0.97),
+                    ha="center", va="top", fontsize=7.5,
+                    color="#2E86AB", fontstyle="italic")
 
-        ax.plot(b_grid, P_grid, color=col, lw=1.6, alpha=0.75,
-                label=f"FY{years[i]}")
-        # Observed price dot
-        b_obs = result["b_used"][i]
-        ax.scatter(b_obs, row["price"], s=90, color=col, zorder=8,
-                   edgecolors="white", linewidths=1.0)
-        ax.annotate(f"FY{years[i]}", xy=(b_obs, row["price"]),
-                    xytext=(6, 4), textcoords="offset points",
-                    fontsize=7.5, color=col, fontweight="bold")
-
-    ax.axvline(b_star, color="#555555", lw=1.3, ls="--", alpha=0.7,
+    # b* dashed line
+    ax.axvline(b_star, color="#555555", lw=1.3, ls="--",
                label=f"b* = {b_star:.3f}")
+
+    # Observed prices
+    for i, row in panel.iterrows():
+        b_i = result["b_used"][i]
+        ax.scatter(b_i, row["price"], s=90, color=pt_colors[i], zorder=8,
+                   edgecolors="white", linewidths=1.0)
+        ax.annotate(f"FY{years[i]}", xy=(b_i, row["price"]),
+                    xytext=(6, 4), textcoords="offset points",
+                    fontsize=7.5, color=pt_colors[i], fontweight="bold")
+
     ax.set_xlim(0, 1)
-    ax.set_ylim(0, p_max * 2.2)
+    ax.set_ylim(0, y_max)
     ax.set_xlabel("Plowback ratio  b", fontsize=9)
     ax.set_ylabel("Stock price  P  ($)", fontsize=9)
-    ax.set_title("P(b) — MSFT Pricing Curve by Year\n"
-                 "(a₀, aᵦ global; each year's own EP, ROI, EPS)",
-                 fontsize=9.5, fontweight="bold", color="#1B3A6B")
+    ax.set_title("P(b) — Global Pricing Curve  (a₀, aᵦ estimated, mean EP/ROI/EPS)\n"
+                 "Observed prices shown as dots; shaded region: curve off scale near b*",
+                 fontsize=9.0, fontweight="bold", color="#1B3A6B")
     ax.legend(fontsize=8, framealpha=0.85)
     ax.grid(True, alpha=0.25, lw=0.6)
     ax.tick_params(labelsize=8)
@@ -620,12 +632,12 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
     story += [
         Image(fig1_path, width=TEXT_W, height=TEXT_W * 5 / 13),
         P(
-            "<b>Figure 1.</b>  Left: year-specific P(b) curves — the same estimated "
-            "a₀ and aᵦ applied to each fiscal year's own EP, ROI, and EPS. Filled "
-            "dots are observed prices; the dashed line marks b* = 0.284. "
-            "Right: adaptive parameter a(b) = a₀·(1 − b/aᵦ) with per-year residuals "
-            "l shown as vertical segments between the fitted curve and the required "
-            "value (red = disadvantage, green = advantage).",
+            "<b>Figure 1.</b>  Left: single global P(b) curve using mean EP, ROI, and "
+            "EPS. The blue shaded band near b* = 0.284 marks where P → ∞ "
+            "(off the display scale); the y-axis is clipped at 1.6× the maximum "
+            "observed price. Filled dots are observed MSFT prices (red = disadvantage, "
+            "green = advantage). Right: adaptive parameter a(b) = a₀·(1 − b/aᵦ) with "
+            "per-year residuals l shown as vertical segments.",
             "caption",
         ),
         SP(0.6),
