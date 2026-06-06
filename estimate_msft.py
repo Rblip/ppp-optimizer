@@ -273,7 +273,106 @@ def fit_constrained(ticker: str,
 
 
 # ============================================================================
-# 3. RUN MSFT ESTIMATION
+# 3. DYNAMIC ESTIMATION  (joint a0, ab, r_d from price data)
+# ============================================================================
+
+def fit_dynamic(ticker: str,
+                b: np.ndarray,
+                p: np.ndarray,
+                E: np.ndarray) -> dict:
+    """
+    Jointly estimate a0, ab, r_d by minimising the sum of squared relative
+    price errors under the Gordon dynamic model.
+
+    Model
+    -----
+        g_t = b_t · (r_d + a0·(1 − b_t/ab))         [sustainable growth rate]
+        V_t = E_t·(1 − b_t)·(1 + g_t) / (r_d − g_t) [Gordon perpetuity]
+
+    r_d is the cost of equity — estimated here from absolute price levels,
+    eliminating the circularity of the r(b) blend used in the static model.
+    a0 and ab are identified by the variation in b and (E, P) across years.
+
+    Parameters
+    ----------
+    ticker : firm label
+    b      : plowback ratios,     shape (T,)
+    p      : observed prices,     shape (T,)
+    E      : earnings per share,  shape (T,)
+    """
+    b_ = np.asarray(b, dtype=float)
+    p_ = np.asarray(p, dtype=float)
+    E_ = np.asarray(E, dtype=float)
+
+    valid = (np.isfinite(b_) & np.isfinite(p_) & np.isfinite(E_)
+             & (b_ > 0) & (b_ < 1) & (p_ > 0) & (E_ > 0))
+    b_, p_, E_ = b_[valid], p_[valid], E_[valid]
+    n = len(b_)
+    if n < 3:
+        raise ValueError(f"{ticker}: only {n} valid observations for dynamic fit")
+
+    def sse(params: np.ndarray) -> float:
+        a0, ab, r_d = params
+        if ab < 1e-8 or r_d <= 1e-6:
+            return 1e12
+        total = 0.0
+        for i in range(n):
+            a_i = a0 * (1.0 - b_[i] / ab)
+            g_i = b_[i] * (r_d + a_i)
+            if r_d - g_i <= 1e-8:
+                return 1e12
+            V_i = E_[i] * (1.0 - b_[i]) * (1.0 + g_i) / (r_d - g_i)
+            total += ((V_i / p_[i]) - 1.0) ** 2   # relative squared errors
+        return total
+
+    result = differential_evolution(
+        sse,
+        bounds=[(0.0, 1.0),    # a0
+                (0.0, 1.0),    # ab
+                (0.01, 0.50)], # r_d  (cost of equity: 1%–50%)
+        seed=42,
+        maxiter=5000,
+        tol=1e-12,
+        popsize=25,
+        mutation=(0.5, 1.5),
+        recombination=0.9,
+    )
+
+    a0_hat, ab_hat, r_d_hat = result.x
+
+    V_fit = np.empty(n)
+    g_fit = np.empty(n)
+    for i in range(n):
+        a_i = a0_hat * (1.0 - b_[i] / ab_hat)
+        g_i = b_[i] * (r_d_hat + a_i)
+        g_fit[i] = g_i
+        if r_d_hat - g_i <= 1e-8:
+            V_fit[i] = np.nan
+        else:
+            V_fit[i] = E_[i] * (1.0 - b_[i]) * (1.0 + g_i) / (r_d_hat - g_i)
+
+    rel_resid = (V_fit - p_) / p_
+    rmse_rel  = float(np.sqrt(np.nanmean(rel_resid ** 2)))
+
+    return {
+        "ticker":    ticker,
+        "a0":        float(a0_hat),
+        "ab":        float(ab_hat),
+        "r_d":       float(r_d_hat),
+        "V_fitted":  V_fit,
+        "g_fitted":  g_fit,
+        "rel_resid": rel_resid,
+        "rmse_rel":  rmse_rel,
+        "n_obs":     n,
+        "converged": result.success,
+        "b_used":    b_,
+        "p_used":    p_,
+        "E_used":    E_,
+    }
+
+
+# ============================================================================
+# 4. RUN MSFT ESTIMATION
 # ============================================================================
 
 if __name__ == "__main__":
