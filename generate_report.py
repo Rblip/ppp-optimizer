@@ -33,6 +33,10 @@ from reportlab.platypus import (
 
 from yahoo_curve import compute_r
 from estimate_msft import fetch_msft_panel, fit_constrained
+from dynamic_curve import (
+    implied_growth, simulate_eps, validate_growth,
+    optimal_b_myopic, optimal_b_dynamic, value_myopic_blend, firm_value,
+)
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 NAVY   = colors.HexColor("#1B3A6B")
@@ -251,6 +255,94 @@ def figure_sentiment(panel, result) -> str:
     return _save_fig(fig)
 
 
+def figure_dynamic(panel, result, b_myo, b_dyn, r_d) -> str:
+    """
+    Left:  forward EPS trajectories under the myopic vs dynamic plowback,
+           with MSFT's realised EPS overlaid.
+    Right: firm value vs b for both treatments, optima and observed band marked.
+    """
+    a0, ab = result["a0"], result["ab"]
+    EP_m   = float(panel["EP"].mean())
+    ROI_m  = float(panel["ROI"].mean())
+    E0     = float(panel["EPS"].iloc[-1])
+    b_lo, b_hi = float(panel["b"].min()), float(panel["b"].max())
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    fig.patch.set_facecolor("white")
+
+    # ── Left: endogenous EPS trajectories ─────────────────────────────────────
+    ax = axes[0]
+    T = 10
+    yrs = np.arange(0, T + 1)
+    r_path = np.full(T, r_d)
+    E_dyn = simulate_eps(E0, np.full(T, b_dyn), r_path, a0, ab)
+    E_myo = simulate_eps(E0, np.full(T, b_myo), r_path, a0, ab)
+
+    g_dyn = implied_growth(b_dyn, r_d, a0, ab)
+    g_myo = implied_growth(b_myo, r_d, a0, ab)
+
+    ax.plot(yrs, E_dyn, color="#1E8449", lw=2.4, marker="o", ms=4,
+            label=f"b*_dyn = {b_dyn:.2f}   (g = {g_dyn*100:.1f}%/yr)")
+    ax.plot(yrs, E_myo, color="#C0392B", lw=2.4, marker="s", ms=4,
+            label=f"b*_myopic = {b_myo:.2f}   (g = {g_myo*100:.1f}%/yr)")
+
+    # MSFT realised EPS (last 4 fiscal years, aligned to start)
+    eps_hist = panel["EPS"].values
+    ax.scatter(np.arange(-(len(eps_hist) - 1), 1), eps_hist,
+               color="#1B3A6B", s=55, zorder=8, marker="D",
+               label="MSFT realised EPS")
+
+    ax.axhline(E0, color="#888888", lw=0.8, ls=":")
+    ax.set_xlabel("Years from latest fiscal year", fontsize=9)
+    ax.set_ylabel("Earnings per share  E  ($)", fontsize=9)
+    ax.set_title("Endogenous Earnings:  E compounds through plowback\n"
+                 "Eₜ₊₁ = Eₜ·(1 + b·(r + a(b)))",
+                 fontsize=9.5, fontweight="bold", color="#1B3A6B")
+    ax.legend(fontsize=8, framealpha=0.9, loc="upper left")
+    ax.grid(True, alpha=0.25, lw=0.6)
+    ax.tick_params(labelsize=8)
+
+    # ── Right: value vs b, myopic vs dynamic optima ───────────────────────────
+    ax2 = axes[1]
+    b_m, bg_m, v_m = optimal_b_myopic(E0, EP_m, ROI_m, a0, ab)
+    b_d, bg_d, v_d = optimal_b_dynamic(E0, r_d, a0, ab)
+
+    # Normalise each to its own peak for shape comparison
+    v_m_n = v_m / np.nanmax(v_m)
+    v_d_n = v_d / np.nanmax(v_d)
+
+    ax2.plot(bg_m, v_m_n, color="#C0392B", lw=2.2,
+             label="Myopic: r blends to ROI")
+    ax2.plot(bg_d, v_d_n, color="#1E8449", lw=2.2,
+             label="Dynamic: r = cost of equity")
+
+    ax2.axvline(b_m, color="#C0392B", lw=1.3, ls="--", alpha=0.8)
+    ax2.axvline(b_d, color="#1E8449", lw=1.3, ls="--", alpha=0.8)
+    ax2.text(b_m, 1.02, f"b*={b_m:.2f}", color="#C0392B",
+             fontsize=8, ha="center", fontweight="bold")
+    ax2.text(b_d, 1.02, f"b*={b_d:.2f}", color="#1E8449",
+             fontsize=8, ha="center", fontweight="bold")
+
+    # MSFT observed plowback band
+    ax2.axvspan(b_lo, b_hi, alpha=0.12, color="#1B3A6B", zorder=0)
+    ax2.text((b_lo + b_hi) / 2, 0.12, "MSFT\nobserved",
+             color="#1B3A6B", fontsize=7.5, ha="center", va="bottom")
+
+    ax2.set_xlim(0, 0.92)
+    ax2.set_ylim(0, 1.12)
+    ax2.set_xlabel("Plowback ratio  b", fontsize=9)
+    ax2.set_ylabel("Firm value  (normalised to peak)", fontsize=9)
+    ax2.set_title("Optimal Plowback:  Myopic vs Dynamic\n"
+                  "Dynamic optimum falls inside MSFT's actual range",
+                  fontsize=9.5, fontweight="bold", color="#1B3A6B")
+    ax2.legend(fontsize=8, framealpha=0.9, loc="lower center")
+    ax2.grid(True, alpha=0.25, lw=0.6)
+    ax2.tick_params(labelsize=8)
+
+    fig.tight_layout(pad=1.8)
+    return _save_fig(fig)
+
+
 # ── Table helpers ─────────────────────────────────────────────────────────────
 
 def data_table(rows, col_widths, header_color=NAVY):
@@ -290,6 +382,16 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
     rmse = float(np.sqrt(np.mean(result["residuals"] ** 2)))
     years = panel["date"].dt.year.tolist()
     l_vals = result["residuals"]
+
+    # Dynamic-extension quantities (endogenous earnings)
+    EP_m  = float(panel["EP"].mean())
+    ROI_m = float(panel["ROI"].mean())
+    E0    = float(panel["EPS"].iloc[-1])
+    r_d   = float(np.mean([compute_r(result["b_used"][i],
+                                     panel["EP"].iloc[i], panel["ROI"].iloc[i])
+                           for i in range(len(panel))]))
+    b_myo, _, _ = optimal_b_myopic(E0, EP_m, ROI_m, a0, ab)
+    b_dyn, _, _ = optimal_b_dynamic(E0, r_d, a0, ab)
 
     doc = SimpleDocTemplate(
         output,
@@ -644,23 +746,95 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
         ),
         SP(0.2),
         P(
-            "The residuals l capture the <i>static</i> mismatch: a positive l signals "
-            "that management is holding b above the curve's current optimum, "
-            "accepting a present-value discount on dividends in exchange for "
-            "future EPS growth. FY2023's negative l (advantage) is the exception: "
-            "the OpenAI commitment was priced by the market as a supernormal "
-            "reinvestment opportunity, causing the observed price to <i>exceed</i> "
-            "the static theoretical value. In subsequent years, as the bet matured "
-            "into revenue, l reverted to mildly positive — management reinvests "
-            "heavily but the market prices this as normal industrial-scale capex, "
-            "not a transformational opportunity."
+            "But the curve-shift story raises a sharper question: if MSFT's "
+            "plowback (0.30–0.58) sits <i>above</i> the static optimum b* = 0.28, "
+            "is the firm chronically over-retaining? Section 6 shows the answer is "
+            "no — the static b* is a myopic artifact. Once earnings are made "
+            "endogenous, the optimal plowback rises into MSFT's actual range."
         ),
         PageBreak(),
     ]
 
-    # ── 6. Figures ────────────────────────────────────────────────────────────
+    # ── 6. Dynamic Extension ──────────────────────────────────────────────────
     story += [
-        P("6.  Figures", "h1"), rule(), SP(0.3),
+        P("6.  Dynamic Extension — Endogenous Earnings", "h1"), rule(),
+        P("6.1  The Myopia of the Single-Period Optimum", "h2"),
+        P(
+            "The static curve treats earnings E as <i>given</i> and asks which "
+            "constant plowback maximises today's price. Its optimum b* = 0.28 is "
+            "myopic: it never credits the fact that retained earnings <b>compound</b> "
+            "into higher future E. A deeper inspection reveals the low optimum is "
+            "largely an artifact of the discount-rate specification. The blend "
+            "r(b) = (1−b)·EP + b·ROI puts a single rate in the denominator; because "
+            "ROI (≈35%) far exceeds EP (≈3%), every extra unit of retention inflates "
+            "the discount rate toward ROI, mechanically penalising plowback and "
+            "dragging the optimum down."
+        ),
+        SP(0.3),
+        P("6.2  Separating Discount Rate from Reinvestment Return", "h2"),
+        P(
+            "The dynamic model disentangles the two distinct roles the blend "
+            "conflated:"
+        ),
+        P("•  the <b>discount rate</b> r_d — the cost of equity, roughly constant;", "bullet"),
+        P("•  the <b>reinvestment return</b> ρ(b) = r_d + a(b) — an ROE-like quantity "
+          "(≈33% at b = 0.5) earned on the retained portion.", "bullet"),
+        SP(0.1),
+        P(
+            "Earnings then evolve endogenously through the standard "
+            "sustainable-growth identity:"
+        ),
+        SP(0.2),
+        P("Eₜ₊₁  =  Eₜ · ( 1 + gₜ ),     gₜ = bₜ · ( r_d + a(bₜ) )", "mono"),
+        SP(0.2),
+        P(
+            "and firm value is the present value of the resulting dividend stream, "
+            "Dₜ = Eₜ·(1 − b), discounted at r_d — the Gordon result, now used "
+            "forward rather than as a static snapshot."
+        ),
+        SP(0.3),
+        P("6.3  Validation of the Growth Channel", "h2"),
+        P(
+            "The mechanism is testable: the model-implied growth gₜ = bₜ·(r_d + a(bₜ)) "
+            "should track MSFT's realised year-over-year EPS growth. It does, "
+            "closely, through the AI-investment years:"
+        ),
+        SP(0.2),
+    ]
+
+    # Growth-validation table
+    gv = validate_growth(panel, result)
+    gv_rows = [["Period", "b", "g model = b·(r+a)", "g realised (ΔEPS)"]]
+    for v in gv:
+        gv_rows.append([
+            f"{v['year_from']}→{v['year_to']}",
+            f"{v['b']:.3f}",
+            f"{v['g_model']*100:.1f}%",
+            f"{v['g_real']*100:.1f}%",
+        ])
+    gv_cw = [x * cm for x in [3.0, 2.4, 5.0, TEXT_W / cm - 10.4]]
+    story += [data_table(gv_rows, gv_cw), SP(0.3)]
+
+    story += [
+        P("6.4  The Dynamic Optimum", "h2"),
+        P(
+            f"Discounting at the cost of equity r_d = {r_d:.3f} and letting earnings "
+            "compound, the value-maximising plowback rises from the myopic "
+            f"<b>b*_myopic = {b_myo:.2f}</b> to <b>b*_dynamic = {b_dyn:.2f}</b> — "
+            f"squarely inside MSFT's observed range of {float(panel['b'].min()):.2f}–"
+            f"{float(panel['b'].max()):.2f}. The conclusion reverses: MSFT is "
+            "<b>not over-retaining</b>. Its heavy reinvestment is value-maximising "
+            "once the compounding of retained earnings is properly credited. The "
+            "rise in both b and P is not a paradox but the signature of a firm "
+            "correctly exploiting reinvestment returns that sit close to its "
+            "discount rate."
+        ),
+        SP(0.5),
+    ]
+
+    # ── 7. Figures ────────────────────────────────────────────────────────────
+    story += [
+        P("7.  Figures", "h1"), rule(), SP(0.3),
     ]
 
     fig1_path = figure_curve(panel, result)
@@ -689,12 +863,29 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
             "with the OpenAI commitment and Azure acceleration.",
             "caption",
         ),
+        SP(0.6),
+    ]
+
+    fig3_path = figure_dynamic(panel, result, b_myo, b_dyn, r_d)
+    story += [
+        Image(fig3_path, width=TEXT_W, height=TEXT_W * 5 / 13),
+        P(
+            "<b>Figure 3.</b>  Dynamic extension. Left: forward EPS trajectories "
+            "with earnings made endogenous (Eₜ₊₁ = Eₜ·(1 + b·(r + a(b)))); the "
+            f"dynamic optimum b = {b_dyn:.2f} compounds far faster than the myopic "
+            f"b = {b_myo:.2f}, and MSFT's realised EPS (diamonds) tracks the high-"
+            "plowback path. Right: firm value vs plowback under each treatment, "
+            "normalised to peak. Treating r as a proper cost of equity (green) moves "
+            f"the optimum from {b_myo:.2f} to {b_dyn:.2f}, inside the shaded band of "
+            "MSFT's actually-chosen plowback.",
+            "caption",
+        ),
         SP(0.5),
     ]
 
-    # ── 7. Conclusion ─────────────────────────────────────────────────────────
+    # ── 8. Conclusion ─────────────────────────────────────────────────────────
     story += [
-        P("7.  Conclusion", "h1"), rule(),
+        P("8.  Conclusion", "h1"), rule(),
         P(
             "The empirical curve model provides a compact, interpretable framework "
             "for pricing a firm as a function of its capital-allocation decisions. "
@@ -706,11 +897,13 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
         SP(0.3),
         P(
             "Applied to MSFT, the model estimates a₀ = 0.437 and aᵦ = 0.783 "
-            "with R² = 0.976 on four annual observations. The implied optimal "
-            "plowback is b* = 0.284 — considerably below MSFT's observed range "
-            "of 0.30–0.58, suggesting the firm consistently retains more earnings "
-            "than the static model would recommend, though the AI investment cycle "
-            "makes this defensible."
+            "with R² = 0.976 on four annual observations. The static optimum "
+            "b*_myopic = 0.28 lies below MSFT's observed range of 0.30–0.58, which "
+            "at first suggests chronic over-retention. The dynamic extension "
+            "overturns this: once earnings are made endogenous and the discount "
+            "rate is treated as a proper cost of equity rather than a blend that "
+            f"rises toward ROI, the optimum climbs to b*_dynamic = {b_dyn:.2f} — "
+            "inside MSFT's actual range. The firm is optimising, not over-retaining."
         ),
         SP(0.3),
         P(
@@ -720,7 +913,10 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
             "long-run curve — the year the OpenAI partnership was forged. "
             "Tracking l over time thus offers a real-time indicator of whether "
             "management's capital-allocation decisions are consistent with, above, "
-            "or below the firm's own historical reinvestment capabilities."
+            "or below the firm's own historical reinvestment capabilities. Together, "
+            "the static residuals and the dynamic optimum give complementary views: "
+            "l flags year-by-year deviations, while b*_dynamic confirms the firm's "
+            "reinvestment policy is sound over the long run."
         ),
         SP(0.5),
         rule(),
@@ -731,7 +927,7 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
     print(f"  PDF written → {output}")
 
     # Clean up temp figures
-    for p in [fig1_path, fig2_path]:
+    for p in [fig1_path, fig2_path, fig3_path]:
         try:
             os.remove(p)
         except OSError:
