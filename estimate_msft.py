@@ -9,41 +9,41 @@ Model
     a(b) = a0 * (1 - b / ab) - l          [adaptive, firm-specific]
     r(b) = (1 - b) * EP  +  b * ROI       [financially parameterized]
 
-Identification of b and P from MSFT quarterly data
----------------------------------------------------
-    b_t  = plowback (retention) ratio at quarter t
-           = 1 - dividends_per_share_t / diluted_eps_t
-           In (0, 1): fraction of earnings NOT paid as dividends
+Interpretation of l  — management's perceived disadvantage of b
+---------------------------------------------------------------
+    l is the residual between the theoretical reinvestment premium a0*(1-b/ab)
+    and the premium actually required to price the stock at its observed level.
 
-    P_t  = stock price at end of quarter t
-           The Gordon Growth Model equates this to the formula above.
+    l > 0  Management perceives the current plowback ratio b as disadvantageous:
+           the effective reinvestment premium is discounted below the theoretical
+           curve.  They earn less from reinvestment than the model expects.
 
-    E_t  = diluted EPS for quarter t   (numerator scale)
-    EP_t = E_t / P_t                   (quarterly earnings yield → feeds r)
-    ROI_t = quarterly ROE = net_income_t / stockholders_equity_t
+    l = 0  Management is neutral about b; the stock is priced exactly on the
+           theoretical curve.
+
+    l < 0  Management perceives an advantage in b: they earn above the
+           theoretical curve at the current reinvestment rate.
+
+    Because l is estimated residually from observed prices, it is a revealed
+    preference — it reflects what management's capital-allocation decisions
+    imply about their own assessment of the return on retained earnings.
+
+Identification of b and P from MSFT annual data
+------------------------------------------------
+    b_t  = economic plowback ratio for fiscal year t
+           = 1 - (dividends_t + buybacks_t) / net_income_t
+           Fraction of earnings truly retained (not returned via any channel).
+
+    P_t  = stock price at fiscal-year end.
+    E_t  = annual diluted EPS.
+    EP_t = E_t / P_t   (earnings yield → feeds r).
+    ROI_t = net_income_t / equity_t   (annual ROE → feeds r).
 
 Constraints for interior optimum  (from Desmos slider bounds)
 --------------------------------------------------------------
-    a0 ∈ [0, 1]
-    ab ∈ [0, 1]
+    a0 ∈ [0, 1],  ab ∈ [0, 1]
 
-    These ensure that the P(b) curve has a peak at some b* ∈ (0, 1),
-    i.e., there is an optimal reinvestment rate for the firm.
-
-Estimation
-----------
-    For each quarter, invert the curve formula to recover the a value
-    that is *required* for the model to price the stock exactly:
-
-        a_required_t = (P_t * r_t - E_t * (1 - b_t)) / (P_t * b_t) - r_t
-
-    Then fit a0 and ab by minimising the sum of squared residuals
-
-        l_t = a0 * (1 - b_t / ab) - a_required_t
-
-    subject to a0, ab ∈ [0, 1], using global constrained optimisation
-    (differential evolution) to guarantee the interior-optimum constraints
-    are satisfied.
+    Guarantee P(b) has a peak at b* ∈ (0, 1): an optimal reinvestment rate.
 """
 
 from __future__ import annotations
@@ -339,21 +339,30 @@ if __name__ == "__main__":
     P_pred = E_m * (1.0 - b_typ) / denom if abs(denom) > 1e-10 else float("nan")
     print(f"    P(b)   = {P_pred:.2f}   (observed avg price: {panel['price'].mean():.2f})")
 
-    # Per-observation residuals
-    print(f"\n  Per-observation residuals (l_t = a_required - a_fitted):")
-    print(f"  {'b_t':>8} {'a_required':>12} {'a_fitted':>10} {'l_t':>10}")
-    print("  " + "-" * 44)
+    # Per-observation residuals — management's perceived disadvantage of b
+    years = panel["date"].dt.year.tolist()
+    print(f"\n  l_t = management's perceived disadvantage of b_t")
+    print(f"  (l > 0: disadvantage — earns below curve;  l < 0: advantage — earns above curve)\n")
+    print(f"  {'FY':>6} {'b_t':>8} {'a_required':>12} {'a_fitted':>10} "
+          f"{'l_t':>10}  {'signal':>20}")
+    print("  " + "-" * 72)
     for i in range(len(result["b_used"])):
         b_i  = result["b_used"][i]
         aq_i = result["a_required"][i]
         af_i = result["a_fitted"][i]
         l_i  = result["residuals"][i]
-        print(f"  {b_i:>8.4f} {aq_i:>12.6f} {af_i:>10.6f} {l_i:>10.6f}")
+        signal = "disadvantage (l > 0)" if l_i > 1e-4 else \
+                 "advantage   (l < 0)" if l_i < -1e-4 else "neutral"
+        print(f"  {years[i]:>6} {b_i:>8.4f} {aq_i:>12.6f} {af_i:>10.6f} "
+              f"{l_i:>10.6f}  {signal:>20}")
 
     print("\n" + "=" * 70)
     print("  Interpretation:")
-    print(f"  The adaptive parameter a(b) = {result['a0']:.4f}*(1 - b/{result['ab']:.4f})")
-    print(f"  decreases in b, reaching zero at b = ab = {result['ab']:.4f}.")
-    print(f"  The P(b) curve peaks at b* = {result['b_star']:.4f}, meaning MSFT's")
-    print(f"  value is maximised when {result['b_star']*100:.1f}% of earnings are reinvested.")
+    print(f"  a(b) = {result['a0']:.4f}*(1 - b/{result['ab']:.4f})  — theoretical reinvestment premium")
+    print(f"  ab = {result['ab']:.4f}: plowback at which the premium reaches zero.")
+    print(f"  b* = {result['b_star']:.4f}: value-maximising plowback (interior optimum).")
+    print()
+    print("  l by year captures whether management's actual capital-allocation")
+    print("  decisions reveal a perceived disadvantage (l > 0) or advantage (l < 0)")
+    print("  in the plowback ratio chosen that year relative to the fitted curve.")
     print("=" * 70)
