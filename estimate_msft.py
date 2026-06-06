@@ -70,103 +70,95 @@ def _first_available(df: pd.DataFrame, keys: list[str]) -> pd.Series | None:
 
 def fetch_msft_panel() -> pd.DataFrame:
     """
-    Download quarterly MSFT financial data from Yahoo Finance and return
-    a tidy DataFrame with columns:
-        date, EPS, price, net_income, equity, dividends_per_share, b, EP, ROI
+    Download ANNUAL MSFT financial data from Yahoo Finance (4 fiscal years)
+    and return a tidy DataFrame.
+
+    Plowback ratio uses the ECONOMIC definition:
+        b = 1 - (dividends + buybacks) / net_income
+
+    This is wider-ranging than the dividend-only ratio because MSFT returns
+    large amounts via buybacks, giving b meaningful variation across years.
     """
-    print("  Downloading MSFT quarterly financials from Yahoo Finance...")
+    print("  Downloading MSFT annual financials from Yahoo Finance...")
     tk = yf.Ticker("MSFT")
 
-    # ── Income statement ─────────────────────────────────────────────────────
-    income = tk.quarterly_income_stmt
+    # ── Annual income statement ───────────────────────────────────────────────
+    income = tk.income_stmt        # ANNUAL: 4 fiscal years (FY end = June 30)
 
-    eps_series = _first_available(
-        income, ["Diluted EPS", "Basic EPS", "EPS"]
-    )
-    ni_series = _first_available(
-        income, ["Net Income", "Net Income Common Stockholders",
-                 "Net Income Including Noncontrolling Interests"]
-    )
+    eps_series = _first_available(income, ["Diluted EPS", "Basic EPS"])
+    ni_series  = _first_available(income, ["Net Income",
+                                           "Net Income Common Stockholders"])
 
-    # ── Cash-flow statement (dividends paid) ──────────────────────────────────
-    cf = tk.quarterly_cashflow
-    div_series = _first_available(
-        cf, ["Cash Dividends Paid", "Common Stock Dividend Paid",
-             "Dividends Paid", "Payment Of Dividends"]
-    )
-    shares_series = _first_available(
-        cf, ["Issuance Of Capital Stock", "Common Stock Issuance",
-             "Repurchase Of Capital Stock"]
-    )
+    # ── Annual cash flow ──────────────────────────────────────────────────────
+    cf = tk.cashflow
 
-    # ── Balance sheet (stockholders' equity) ──────────────────────────────────
-    bs = tk.quarterly_balance_sheet
-    eq_series = _first_available(
-        bs, ["Stockholders Equity", "Common Stock Equity",
-             "Total Equity Gross Minority Interest",
-             "Ordinary Shares Number"]
-    )
-    shares_out = _first_available(
-        bs, ["Ordinary Shares Number", "Share Issued",
-             "Common Stock Shares Outstanding"]
-    )
+    div_series  = _first_available(cf, ["Cash Dividends Paid",
+                                        "Common Stock Dividend Paid"])
+    bb_series   = _first_available(cf, ["Repurchase Of Capital Stock",
+                                        "Common Stock Payments"])
 
-    # ── Price history (daily → quarterly end-of-period) ───────────────────────
+    # ── Annual balance sheet ──────────────────────────────────────────────────
+    bs = tk.balance_sheet
+
+    eq_series = _first_available(bs, ["Stockholders Equity",
+                                      "Common Stock Equity"])
+
+    # ── Fiscal-year-end prices ────────────────────────────────────────────────
     prices = tk.history(period="6y", interval="1d", auto_adjust=True)
     prices.index = prices.index.tz_localize(None) if prices.index.tz else prices.index
-    prices_q = prices["Close"].resample("QE").last()
+    prices_annual = prices["Close"].resample("YE-JUN").last()   # fiscal year = July–June
 
-    # ── Align all series on quarterly dates ───────────────────────────────────
-    dates = eps_series.dropna().index if eps_series is not None else pd.Index([])
+    if eps_series is None or ni_series is None or eq_series is None:
+        raise RuntimeError("Could not retrieve core annual financials from Yahoo Finance.")
+
+    dates   = eps_series.dropna().index
     records = []
 
     for dt in dates:
         try:
-            eps = float(eps_series[dt]) if eps_series is not None else None
-            ni  = float(ni_series[dt])  if ni_series  is not None else None
-            eq  = float(eq_series[dt])  if eq_series  is not None else None
+            eps = float(eps_series.get(dt, float("nan")))
+            ni  = float(ni_series.get(dt,  float("nan")))
+            eq  = float(eq_series.get(dt,  float("nan")))
 
-            # Match to nearest quarter-end price
-            price_match = prices_q.reindex([dt], method="nearest")
-            price = float(price_match.iloc[0]) if len(price_match) > 0 else None
+            # Fiscal-year-end price (nearest available trading day)
+            idx = prices_annual.index.get_indexer([dt], method="nearest")[0]
+            price = float(prices_annual.iloc[idx]) if idx >= 0 else float("nan")
 
-            # Dividends per share: total dividends paid / shares outstanding
-            div_total = float(div_series[dt])    if div_series  is not None else 0.0
-            n_shares   = float(shares_out[dt])   if shares_out  is not None else None
+            # Total capital returned to shareholders (both negative in yfinance)
+            div     = abs(float(div_series.get(dt, 0) or 0)) if div_series is not None else 0.0
+            buyback = abs(float(bb_series.get(dt,  0) or 0)) if bb_series  is not None else 0.0
+            total_payout = div + buyback
 
-            if n_shares and n_shares > 0 and abs(div_total) > 0:
-                dps = abs(div_total) / n_shares   # dividends paid is negative in yfinance
-            else:
-                dps = 0.0
-
-            if None in (eps, price, ni, eq):
+            if not all(map(np.isfinite, [eps, ni, eq, price])):
                 continue
-            if eps <= 0 or price <= 0 or eq <= 0:
+            if eps <= 0 or price <= 0 or eq <= 0 or ni <= 0:
                 continue
+
+            # Economic plowback: fraction of earnings NOT returned to shareholders
+            b_economic = (ni - total_payout) / ni
+            b_economic = float(np.clip(b_economic, 0.01, 0.99))
 
             records.append({
-                "date":               pd.Timestamp(dt),
-                "EPS":                eps,
-                "price":              price,
-                "net_income":         ni,
-                "equity":             eq,
-                "dividends_per_share": dps,
+                "date":        pd.Timestamp(dt),
+                "EPS":         eps,
+                "price":       price,
+                "net_income":  ni,
+                "equity":      eq,
+                "dividends":   div,
+                "buybacks":    buyback,
+                "b":           b_economic,
             })
         except Exception:
             continue
 
-    if not records:
-        raise RuntimeError("No valid quarterly observations could be assembled for MSFT.")
+    if len(records) < 2:
+        raise RuntimeError("Fewer than 2 valid annual observations assembled for MSFT.")
 
     panel = pd.DataFrame(records).sort_values("date").reset_index(drop=True)
 
-    # ── Derived quantities ────────────────────────────────────────────────────
-    panel["EP"]  = panel["EPS"]        / panel["price"]    # quarterly earnings yield
-    panel["ROI"] = panel["net_income"] / panel["equity"]   # quarterly ROE
-
-    # Plowback ratio: fraction of EPS not paid as dividends
-    panel["b"] = (panel["EPS"] - panel["dividends_per_share"]) / panel["EPS"]
-    panel["b"] = panel["b"].clip(0.01, 0.99)   # keep strictly in (0, 1)
+    # Annual EP and ROE
+    panel["EP"]  = panel["EPS"]       / panel["price"]    # earnings yield (annual)
+    panel["ROI"] = panel["net_income"] / panel["equity"]   # return on equity (annual)
 
     return panel
 
@@ -298,13 +290,14 @@ if __name__ == "__main__":
     # -- Fetch data -----------------------------------------------------------
     panel = fetch_msft_panel()
 
-    print(f"\nQuarterly panel for MSFT  ({len(panel)} observations):\n")
-    print(f"  {'Date':<12} {'EPS':>7} {'Price':>8} {'EP':>8} "
-          f"{'ROI':>8} {'b (plow)':>10}")
-    print("  " + "-" * 58)
+    print(f"\nAnnual panel for MSFT  ({len(panel)} fiscal years):\n")
+    print(f"  {'FY end':<12} {'EPS':>7} {'Price':>8} {'Divs $B':>9} "
+          f"{'BB $B':>7} {'EP':>8} {'ROI':>8} {'b (econ)':>10}")
+    print("  " + "-" * 74)
     for _, row in panel.iterrows():
         print(f"  {str(row['date'].date()):<12} "
-              f"{row['EPS']:>7.3f} {row['price']:>8.2f} "
+              f"{row['EPS']:>7.2f} {row['price']:>8.2f} "
+              f"{row['dividends']/1e9:>9.1f} {row['buybacks']/1e9:>7.1f} "
               f"{row['EP']:>8.5f} {row['ROI']:>8.5f} {row['b']:>10.4f}")
 
     # -- Constrained estimation -----------------------------------------------
