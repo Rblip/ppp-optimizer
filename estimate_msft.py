@@ -7,7 +7,7 @@ Model
     P(b) = E * (1 - b) / (r(b) - b * (r(b) + a(b)))
 
     a(b) = a0 * (1 - b / ab) - l          [adaptive, firm-specific]
-    r(b) = (1 - b) * EP  +  b * ROI       [financially parameterized]
+    r_t  = (1 - b_t) * EP_t  +  b_t * ROI_t   [given each year from observables — not a parameter]
 
 Interpretation of l  — management's perceived disadvantage of b
 ---------------------------------------------------------------
@@ -281,9 +281,9 @@ if __name__ == "__main__":
     print("  MSFT — FIRM-SPECIFIC CURVE PARAMETER ESTIMATION")
     print("=" * 70)
     print()
-    print("Model:  P(b) = E*(1-b) / (r(b) - b*(r(b)+a(b)))")
-    print("        a(b) = a0*(1 - b/ab) - l   [firm-specific, time-invariant]")
-    print("        r(b) = (1-b)*EP + b*ROI    [financially parameterized]")
+    print("Model:  P(b) = E*(1-b) / (r_t - b*(r_t+a(b)))")
+    print("        a(b) = a0*(1 - b/ab) - l   [estimated, firm-specific, time-invariant]")
+    print("        r_t  = (1-b_t)*EP_t + b_t*ROI_t  [given each year from observables]")
     print("Constraint: a0, ab ∈ [0, 1]  →  interior optimum b* ∈ (0, 1)")
     print()
 
@@ -327,34 +327,24 @@ if __name__ == "__main__":
     print(f"  Converged                      = {result['converged']}")
     print(f"\n  Implied optimal plowback b*    = {result['b_star']:.4f}   ← interior optimum ∈ (0,1)")
 
-    # Implied a(b) at typical plowback
-    b_typ = float(panel["b"].mean())
-    a_typ = result["a0"] * (1.0 - b_typ / result["ab"])
-    print(f"\n  At mean observed b = {b_typ:.4f}:")
-    EP_m, ROI_m, E_m = panel["EP"].mean(), panel["ROI"].mean(), panel["EPS"].mean()
-    r_typ = float(compute_r(b_typ, EP_m, ROI_m))
-    print(f"    a(b)   = {a_typ:.6f}")
-    print(f"    r(b)   = {r_typ:.6f}  (r ∈ [0, 0.2] constraint: {'✓' if r_typ <= 0.2 else '✗ — exceeds 0.2'})")
-    denom  = r_typ - b_typ * (r_typ + a_typ)
-    P_pred = E_m * (1.0 - b_typ) / denom if abs(denom) > 1e-10 else float("nan")
-    print(f"    P(b)   = {P_pred:.2f}   (observed avg price: {panel['price'].mean():.2f})")
-
-    # Per-observation residuals — management's perceived disadvantage of b
+    # Per-observation table — r_t is given each year from observables, not a parameter
     years = panel["date"].dt.year.tolist()
-    print(f"\n  l_t = management's perceived disadvantage of b_t")
+    print(f"\n  r_t is given each year:  r_t = (1 - b_t)*EP_t + b_t*ROI_t  (not estimated)")
+    print(f"  l_t = management's perceived disadvantage of b_t")
     print(f"  (l > 0: disadvantage — earns below curve;  l < 0: advantage — earns above curve)\n")
-    print(f"  {'FY':>6} {'b_t':>8} {'a_required':>12} {'a_fitted':>10} "
-          f"{'l_t':>10}  {'signal':>20}")
-    print("  " + "-" * 72)
+    print(f"  {'FY':>6} {'b_t':>8} {'r_t (given)':>13} {'a_required':>12} "
+          f"{'a_fitted':>10} {'l_t':>10}  {'signal':>20}")
+    print("  " + "-" * 86)
     for i in range(len(result["b_used"])):
-        b_i  = result["b_used"][i]
-        aq_i = result["a_required"][i]
-        af_i = result["a_fitted"][i]
-        l_i  = result["residuals"][i]
+        b_i   = result["b_used"][i]
+        r_i   = float(compute_r(b_i, panel["EP"].iloc[i], panel["ROI"].iloc[i]))
+        aq_i  = result["a_required"][i]
+        af_i  = result["a_fitted"][i]
+        l_i   = result["residuals"][i]
         signal = "disadvantage (l > 0)" if l_i > 1e-4 else \
                  "advantage   (l < 0)" if l_i < -1e-4 else "neutral"
-        print(f"  {years[i]:>6} {b_i:>8.4f} {aq_i:>12.6f} {af_i:>10.6f} "
-              f"{l_i:>10.6f}  {signal:>20}")
+        print(f"  {years[i]:>6} {b_i:>8.4f} {r_i:>13.6f} {aq_i:>12.6f} "
+              f"{af_i:>10.6f} {l_i:>10.6f}  {signal:>20}")
 
     print("\n" + "=" * 70)
     print("  Interpretation:")

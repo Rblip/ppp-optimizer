@@ -369,15 +369,15 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
             "blended by the plowback ratio:"
         ),
         SP(0.2),
-        P("r(b)  =  (1 − b) · EP  +  b · ROI", "mono"),
+        P("rₜ  =  (1 − bₜ) · EPₜ  +  bₜ · ROIₜ", "mono"),
         SP(0.2),
         P(
-            "At <i>b</i> = 0 (all earnings paid out) the discount rate equals the "
-            "earnings yield — investors price the firm as a bond-like instrument. "
-            "At <i>b</i> = 1 (all earnings retained) the discount rate equals ROI — "
-            "investors expect the retained capital to earn the firm's own return. "
-            "The blend is linear and, for MSFT, keeps r within the empirically "
-            "reasonable range [0, 0.20]."
+            "<b>r is not a parameter — it is given each year</b> directly from "
+            "two observables: the earnings yield EP = EPS / Price and the return "
+            "on equity ROI = Net Income / Equity. "
+            "At <i>b</i> = 0 (all earnings paid out) r equals the earnings yield; "
+            "at <i>b</i> = 1 (all earnings retained) r equals ROI. "
+            "The blend is unconstrained; no bounds are imposed on r."
         ),
         SP(0.3),
         P("2.4  The Residual  l  —  Management's Perceived Disadvantage", "h2"),
@@ -520,22 +520,24 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
         P("5.2  Per-Year Residuals and Management Sentiment", "h2"),
     ]
 
-    resid_rows = [["FY", "b", "a_required", "a_fitted", "l", "Signal"]]
+    resid_rows = [["FY", "b", "r  (given)", "a_required", "a_fitted", "l", "Signal"]]
     for i, row in panel.iterrows():
         l_i = l_vals[i]
+        r_i = float(compute_r(result["b_used"][i], row["EP"], row["ROI"]))
         signal = "Disadvantage" if l_i > 1e-4 else \
                  "Advantage"    if l_i < -1e-4 else "Neutral"
         resid_rows.append([
             str(years[i]),
             f"{result['b_used'][i]:.4f}",
+            f"{r_i:.5f}",
             f"{result['a_required'][i]:.5f}",
             f"{result['a_fitted'][i]:.5f}",
             f"{l_i:+.5f}",
             signal,
         ])
 
-    cw3 = [1.0, 1.3, 1.8, 1.8, 1.8, TEXT_W - 7.7 * cm]
-    cw3 = [x * cm for x in [1.0, 1.3, 2.0, 2.0, 1.8, TEXT_W / cm - 1.0 - 1.3 - 2.0 - 2.0 - 1.8]]
+    _base = [1.0, 1.2, 1.8, 1.8, 1.8, 1.6]
+    cw3 = [x * cm for x in _base + [TEXT_W / cm - sum(_base)]]
 
     t_resid = Table(resid_rows, colWidths=cw3)
     t_resid.setStyle(TableStyle([
@@ -551,12 +553,12 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ("LEFTPADDING", (0, 0), (-1, -1), 6),
         ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        # Colour the l and signal cells
-        ("TEXTCOLOR", (4, 2), (5, 2), colors.HexColor("#1E8449")),  # FY2023 advantage
-        ("FONTNAME",  (4, 2), (5, 2), "Helvetica-Bold"),
-        ("TEXTCOLOR", (4, 1), (5, 1), colors.HexColor("#C0392B")),  # FY2022 disadvantage
-        ("TEXTCOLOR", (4, 3), (5, 3), colors.HexColor("#C0392B")),  # FY2024 disadvantage
-        ("TEXTCOLOR", (4, 4), (5, 4), colors.HexColor("#C0392B")),  # FY2025 disadvantage
+        # Colour l and signal: FY2023 = advantage (green), others = disadvantage (red)
+        ("TEXTCOLOR", (5, 2), (6, 2), colors.HexColor("#1E8449")),
+        ("FONTNAME",  (5, 2), (6, 2), "Helvetica-Bold"),
+        ("TEXTCOLOR", (5, 1), (6, 1), colors.HexColor("#C0392B")),
+        ("TEXTCOLOR", (5, 3), (6, 3), colors.HexColor("#C0392B")),
+        ("TEXTCOLOR", (5, 4), (6, 4), colors.HexColor("#C0392B")),
     ]))
     story += [t_resid, SP(0.3)]
 
