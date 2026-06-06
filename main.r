@@ -23,3 +23,4 @@
 # setwd("z:/ppp2")
 source("01_data_loading.r")  # Load the data loading script
 source("02_ppp_optimization.r")  # Load the PPP optimization script
+source("03_curve_model.r")  # Empirical curve model with residual estimation
