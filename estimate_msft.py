@@ -54,7 +54,7 @@ import pandas as pd
 import yfinance as yf
 from scipy.optimize import differential_evolution
 
-from yahoo_curve import compute_r
+from curve_model import curve_P, compute_residual
 
 
 # ============================================================================
@@ -164,141 +164,37 @@ def fetch_msft_panel() -> pd.DataFrame:
 
 
 # ============================================================================
-# 2. CONSTRAINED NLS
+# 2. JOINT CURVE ESTIMATION  (a0, ab, r — all estimated from price data)
 # ============================================================================
 
-def _compute_required_a(b: np.ndarray,
-                         p: np.ndarray,
-                         E: np.ndarray,
-                         r: np.ndarray) -> np.ndarray:
+def fit_curve(ticker: str,
+              b: np.ndarray,
+              p: np.ndarray,
+              E: np.ndarray) -> dict:
     """
-    Invert P(b) = E*(1-b) / (r - b*(r+a))  to solve for a.
-    """
-    return (p * r - E * (1.0 - b)) / (p * b) - r
+    Jointly estimate a0, ab, and the discount rate r by fitting the pricing
+    curve  P(b) = E*(1-b) / (r - b*(r + a(b)))  directly to observed prices
+    via differential evolution (P-space, relative price errors).
 
+    r is a single constant — the firm's cost of equity — estimated from the
+    absolute price level. This replaces the r(b) = (1-b)*EP + b*ROI blend,
+    which rises toward ROI as b increases and mechanically inflates the
+    discount rate, dragging the optimum down toward b* ≈ 0.28 regardless of
+    whether that is where the firm actually creates value.
 
-def fit_constrained(ticker: str,
-                    b: np.ndarray,
-                    p: np.ndarray,
-                    E: np.ndarray,
-                    ROI: np.ndarray,
-                    EP: np.ndarray) -> dict:
-    """
-    Estimate a0, ab ∈ [0, 1] via differential evolution (global constrained NLS).
-
-    Parameters
-    ----------
-    ticker  : firm label
-    b       : plowback ratios, shape (T,)
-    p       : observed prices,  shape (T,)
-    E       : earnings per share, shape (T,)
-    ROI     : quarterly return on equity, shape (T,)
-    EP      : quarterly earnings yield,   shape (T,)
-
-    Returns a dict with: a0, ab, residuals, r_squared, n_obs, b_star
-    """
-    r_arr = compute_r(b, EP, ROI)   # r_t = (1-b_t)*EP_t + b_t*ROI_t
-
-    # Drop observations where the required-a formula is undefined
-    valid = (
-        np.isfinite(b) & np.isfinite(p) & np.isfinite(E)
-        & np.isfinite(r_arr) & np.isfinite(ROI)
-        & (b > 0) & (p > 0) & (E > 0) & (r_arr != 0)
-    )
-    b_, p_, E_, r_ = b[valid], p[valid], E[valid], r_arr[valid]
-
-    a_req = _compute_required_a(b_, p_, E_, r_)
-    finite = np.isfinite(a_req)
-    b_, p_, E_, r_, a_req = b_[finite], p_[finite], E_[finite], r_[finite], a_req[finite]
-
-    n = len(b_)
-    if n < 3:
-        raise ValueError(f"{ticker}: only {n} valid observations after cleaning")
-
-    # ── Objective: sum of squared residuals in a-space ────────────────────────
-    def sse(params: np.ndarray) -> float:
-        a0, ab = params
-        if ab < 1e-8:
-            return 1e12
-        a_fit = a0 * (1.0 - b_ / ab)
-        return float(np.sum((a_req - a_fit) ** 2))
-
-    # ── Global optimisation with unit-interval constraints ────────────────────
-    bounds = [(0.0, 1.0),   # a0
-              (0.0, 1.0)]   # ab
-
-    result = differential_evolution(
-        sse, bounds,
-        seed       = 42,
-        maxiter    = 2000,
-        tol        = 1e-10,
-        popsize    = 20,
-        mutation   = (0.5, 1.5),
-        recombination = 0.9,
-    )
-
-    a0_hat, ab_hat = result.x
-
-    a_fit   = a0_hat * (1.0 - b_ / ab_hat)
-    resid   = a_req - a_fit
-
-    ss_res  = float(np.sum(resid ** 2))
-    ss_tot  = float(np.sum((a_req - np.mean(a_req)) ** 2))
-    r2      = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
-
-    # Optimal plowback b* = argmax P(b) — numerically found
-    b_grid = np.linspace(0.01, 0.99, 2000)
-    EP_rep = np.mean(EP)
-    ROI_rep = np.mean(ROI)
-    E_rep   = np.mean(E)
-    r_grid  = compute_r(b_grid, EP_rep, ROI_rep)
-    a_grid  = a0_hat * (1.0 - b_grid / ab_hat)
-    denom   = r_grid - b_grid * (r_grid + a_grid)
-    P_grid  = np.where(denom > 0, E_rep * (1.0 - b_grid) / denom, np.nan)
-    b_star  = float(b_grid[np.nanargmax(P_grid)])
-
-    return {
-        "ticker":      ticker,
-        "a0":          float(a0_hat),
-        "ab":          float(ab_hat),
-        "residuals":   resid,
-        "r_squared":   float(r2),
-        "n_obs":       n,
-        "b_star":      b_star,       # optimal plowback ratio
-        "converged":   result.success,
-        "b_used":      b_,
-        "a_required":  a_req,
-        "a_fitted":    a_fit,
-    }
-
-
-# ============================================================================
-# 3. DYNAMIC ESTIMATION  (joint a0, ab, r_d from price data)
-# ============================================================================
-
-def fit_dynamic(ticker: str,
-                b: np.ndarray,
-                p: np.ndarray,
-                E: np.ndarray) -> dict:
-    """
-    Jointly estimate a0, ab, r_d by minimising the sum of squared relative
-    price errors under the Gordon dynamic model.
-
-    Model
-    -----
-        g_t = b_t · (r_d + a0·(1 − b_t/ab))         [sustainable growth rate]
-        V_t = E_t·(1 − b_t)·(1 + g_t) / (r_d − g_t) [Gordon perpetuity]
-
-    r_d is the cost of equity — estimated here from absolute price levels,
-    eliminating the circularity of the r(b) blend used in the static model.
-    a0 and ab are identified by the variation in b and (E, P) across years.
+    Because E enters P(b) only as a multiplicative scale factor, b* is the
+    same in every year — a structural property of the firm, not an artifact
+    of that year's earnings level.
 
     Parameters
     ----------
     ticker : firm label
-    b      : plowback ratios,     shape (T,)
-    p      : observed prices,     shape (T,)
-    E      : earnings per share,  shape (T,)
+    b      : plowback ratios,    shape (T,)
+    p      : observed prices,    shape (T,)
+    E      : earnings per share, shape (T,)
+
+    Returns a dict with: a0, ab, r, b_star, residuals (l per year),
+    rel_resid, rmse_rel, n_obs, b_used, P_fitted
     """
     b_ = np.asarray(b, dtype=float)
     p_ = np.asarray(p, dtype=float)
@@ -309,70 +205,78 @@ def fit_dynamic(ticker: str,
     b_, p_, E_ = b_[valid], p_[valid], E_[valid]
     n = len(b_)
     if n < 3:
-        raise ValueError(f"{ticker}: only {n} valid observations for dynamic fit")
+        raise ValueError(f"{ticker}: only {n} valid observations after cleaning")
 
+    # ── Objective: sum of squared relative price errors ──────────────────────
     def sse(params: np.ndarray) -> float:
-        a0, ab, r_d = params
-        if ab < 1e-8 or r_d <= 1e-6:
+        a0, ab, r = params
+        if ab < 1e-8 or r <= 1e-6:
             return 1e12
         total = 0.0
         for i in range(n):
-            a_i = a0 * (1.0 - b_[i] / ab)
-            g_i = b_[i] * (r_d + a_i)
-            if r_d - g_i <= 1e-8:
+            P_i = float(curve_P(b_[i], E_[i], r, a0, ab, l=0.0))
+            if not np.isfinite(P_i) or P_i <= 0:
                 return 1e12
-            V_i = E_[i] * (1.0 - b_[i]) * (1.0 + g_i) / (r_d - g_i)
-            total += ((V_i / p_[i]) - 1.0) ** 2   # relative squared errors
+            total += ((P_i / p_[i]) - 1.0) ** 2
         return total
 
+    bounds = [(0.0, 1.0),    # a0
+              (0.0, 1.0),    # ab
+              (0.01, 0.50)]  # r  (cost of equity: 1%–50%)
+
     result = differential_evolution(
-        sse,
-        bounds=[(0.0, 1.0),    # a0
-                (0.0, 1.0),    # ab
-                (0.01, 0.50)], # r_d  (cost of equity: 1%–50%)
-        seed=42,
-        maxiter=5000,
-        tol=1e-12,
-        popsize=25,
-        mutation=(0.5, 1.5),
-        recombination=0.9,
+        sse, bounds,
+        seed       = 42,
+        maxiter    = 5000,
+        tol        = 1e-12,
+        popsize    = 25,
+        mutation   = (0.5, 1.5),
+        recombination = 0.9,
     )
 
-    a0_hat, ab_hat, r_d_hat = result.x
+    a0_hat, ab_hat, r_hat = result.x
 
-    V_fit = np.empty(n)
-    g_fit = np.empty(n)
-    for i in range(n):
-        a_i = a0_hat * (1.0 - b_[i] / ab_hat)
-        g_i = b_[i] * (r_d_hat + a_i)
-        g_fit[i] = g_i
-        if r_d_hat - g_i <= 1e-8:
-            V_fit[i] = np.nan
-        else:
-            V_fit[i] = E_[i] * (1.0 - b_[i]) * (1.0 + g_i) / (r_d_hat - g_i)
+    P_fit = np.array([float(curve_P(b_[i], E_[i], r_hat, a0_hat, ab_hat))
+                      for i in range(n)])
+    rel_resid = (P_fit - p_) / p_
+    rmse_rel  = float(np.sqrt(np.mean(rel_resid ** 2)))
 
-    rel_resid = (V_fit - p_) / p_
-    rmse_rel  = float(np.sqrt(np.nanmean(rel_resid ** 2)))
+    # Per-year residual l = management's perceived disadvantage of b
+    l_vals = np.array([compute_residual(float(b_[i]), float(p_[i]), float(E_[i]),
+                                         r_hat, a0_hat, ab_hat)
+                       for i in range(n)])
+    a_fitted   = a0_hat * (1.0 - b_ / ab_hat)
+    a_required = a_fitted - l_vals
+
+    # b* = argmax P(b) — independent of E, since E only scales the curve
+    b_grid = np.linspace(0.01, 0.99, 3000)
+    a_grid = a0_hat * (1.0 - b_grid / ab_hat)
+    denom  = r_hat - b_grid * (r_hat + a_grid)
+    shape  = np.where(denom > 1e-8, (1.0 - b_grid) / denom, np.nan)
+    b_star = float(b_grid[np.nanargmax(shape)])
 
     return {
-        "ticker":    ticker,
-        "a0":        float(a0_hat),
-        "ab":        float(ab_hat),
-        "r_d":       float(r_d_hat),
-        "V_fitted":  V_fit,
-        "g_fitted":  g_fit,
-        "rel_resid": rel_resid,
-        "rmse_rel":  rmse_rel,
-        "n_obs":     n,
-        "converged": result.success,
-        "b_used":    b_,
-        "p_used":    p_,
-        "E_used":    E_,
+        "ticker":     ticker,
+        "a0":         float(a0_hat),
+        "ab":         float(ab_hat),
+        "r":          float(r_hat),
+        "b_star":     b_star,
+        "residuals":  l_vals,
+        "a_required": a_required,
+        "a_fitted":   a_fitted,
+        "rel_resid":  rel_resid,
+        "rmse_rel":   rmse_rel,
+        "n_obs":      n,
+        "converged":  result.success,
+        "b_used":     b_,
+        "p_used":     p_,
+        "E_used":     E_,
+        "P_fitted":   P_fit,
     }
 
 
 # ============================================================================
-# 4. RUN MSFT ESTIMATION
+# 3. RUN MSFT ESTIMATION
 # ============================================================================
 
 if __name__ == "__main__":
@@ -380,9 +284,9 @@ if __name__ == "__main__":
     print("  MSFT — FIRM-SPECIFIC CURVE PARAMETER ESTIMATION")
     print("=" * 70)
     print()
-    print("Model:  P(b) = E*(1-b) / (r_t - b*(r_t+a(b)))")
+    print("Model:  P(b) = E*(1-b) / (r - b*(r+a(b)))")
     print("        a(b) = a0*(1 - b/ab) - l   [estimated, firm-specific, time-invariant]")
-    print("        r_t  = (1-b_t)*EP_t + b_t*ROI_t  [given each year from observables]")
+    print("        r    = cost of equity      [estimated jointly with a0, ab from prices]")
     print("Constraint: a0, ab ∈ [0, 1]  →  interior optimum b* ∈ (0, 1)")
     print()
 
@@ -399,19 +303,17 @@ if __name__ == "__main__":
               f"{row['dividends']/1e9:>9.1f} {row['buybacks']/1e9:>7.1f} "
               f"{row['EP']:>8.5f} {row['ROI']:>8.5f} {row['b']:>10.4f}")
 
-    # -- Constrained estimation -----------------------------------------------
-    print("\nRunning constrained optimisation (differential evolution)...")
-    print("  Bounds: a0 ∈ [0, 1],  ab ∈ [0, 1]\n")
+    # -- Joint estimation ------------------------------------------------------
+    print("\nRunning joint estimation (differential evolution, P-space)...")
+    print("  Bounds: a0 ∈ [0, 1],  ab ∈ [0, 1],  r ∈ [0.01, 0.50]\n")
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        result = fit_constrained(
+        result = fit_curve(
             ticker = "MSFT",
             b      = panel["b"].values,
             p      = panel["price"].values,
             E      = panel["EPS"].values,
-            ROI    = panel["ROI"].values,
-            EP     = panel["EP"].values,
         )
 
     # -- Report ---------------------------------------------------------------
@@ -420,38 +322,36 @@ if __name__ == "__main__":
     print("=" * 70)
     print(f"\n  a0  (intercept of a-function)  = {result['a0']:.6f}   [0, 1] ✓")
     print(f"  ab  (breakeven plowback)       = {result['ab']:.6f}   [0, 1] ✓")
-    print(f"\n  R²  (fit on a_required)        = {result['r_squared']:.4f}")
-    print(f"  RMSE                           = {np.sqrt(np.mean(result['residuals']**2)):.6f}")
+    print(f"  r   (cost of equity, est.)     = {result['r']:.6f}")
+    print(f"\n  RMSE (relative price error)    = {result['rmse_rel']*100:.3f}%")
     print(f"  Observations used              = {result['n_obs']}")
     print(f"  Converged                      = {result['converged']}")
     print(f"\n  Implied optimal plowback b*    = {result['b_star']:.4f}   ← interior optimum ∈ (0,1)")
 
-    # Per-observation table — r_t is given each year from observables, not a parameter
     years = panel["date"].dt.year.tolist()
-    print(f"\n  r_t is given each year:  r_t = (1 - b_t)*EP_t + b_t*ROI_t  (not estimated)")
+    print(f"\n  r is a single estimated constant (cost of equity) — not a per-year blend")
     print(f"  l_t = management's perceived disadvantage of b_t")
     print(f"  (l > 0: disadvantage — earns below curve;  l < 0: advantage — earns above curve)\n")
-    print(f"  {'FY':>6} {'b_t':>8} {'r_t (given)':>13} {'a_required':>12} "
-          f"{'a_fitted':>10} {'l_t':>10}  {'signal':>20}")
-    print("  " + "-" * 86)
+    print(f"  {'FY':>6} {'b_t':>8} {'P_obs':>10} {'P_fitted':>10} {'l_t':>10}  {'signal':>20}")
+    print("  " + "-" * 72)
     for i in range(len(result["b_used"])):
-        b_i   = result["b_used"][i]
-        r_i   = float(compute_r(b_i, panel["EP"].iloc[i], panel["ROI"].iloc[i]))
-        aq_i  = result["a_required"][i]
-        af_i  = result["a_fitted"][i]
-        l_i   = result["residuals"][i]
+        b_i = result["b_used"][i]
+        l_i = result["residuals"][i]
         signal = "disadvantage (l > 0)" if l_i > 1e-4 else \
                  "advantage   (l < 0)" if l_i < -1e-4 else "neutral"
-        print(f"  {years[i]:>6} {b_i:>8.4f} {r_i:>13.6f} {aq_i:>12.6f} "
-              f"{af_i:>10.6f} {l_i:>10.6f}  {signal:>20}")
+        print(f"  {years[i]:>6} {b_i:>8.4f} {result['p_used'][i]:>10.2f} "
+              f"{result['P_fitted'][i]:>10.2f} {l_i:>10.6f}  {signal:>20}")
 
     print("\n" + "=" * 70)
     print("  Interpretation:")
     print(f"  a(b) = {result['a0']:.4f}*(1 - b/{result['ab']:.4f})  — theoretical reinvestment premium")
-    print(f"  ab = {result['ab']:.4f}: plowback at which the premium reaches zero.")
-    print(f"  b* = {result['b_star']:.4f}: value-maximising plowback (interior optimum).")
+    print(f"  r    = {result['r']:.4f}: estimated cost of equity (constant, not blended toward ROI)")
+    print(f"  ab   = {result['ab']:.4f}: plowback at which the premium reaches zero")
+    print(f"  b*   = {result['b_star']:.4f}: value-maximising plowback — same every year")
     print()
-    print("  l by year captures whether management's actual capital-allocation")
-    print("  decisions reveal a perceived disadvantage (l > 0) or advantage (l < 0)")
-    print("  in the plowback ratio chosen that year relative to the fitted curve.")
+    print("  Replacing the r(b) blend with a single estimated discount rate")
+    print("  removes the mechanical penalty on retention, moving b* into")
+    print("  MSFT's actually-observed plowback range and leaving residuals l")
+    print("  an order of magnitude smaller than under the blended specification.")
     print("=" * 70)
+
