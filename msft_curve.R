@@ -110,28 +110,34 @@ cat(sprintf("\na0 = %.4f   ab = %.4f   r = %.4f   b* = %.4f\n", a0, ab, r, b_sta
 cat("\nPer-year residuals l:\n")
 print(msft[, c("year", "b", "price", "l")], row.names = FALSE)
 
-# ---- Plot: pricing curves (left) and per-year residuals l (right) ----------
-png("msft_curve_R.png", width = 1400, height = 700, res = 120)
-par(mfrow = c(1, 2))
+# ---- Plot 1: pricing curves, observations, and shared optimum b* -----------
+# FY2022 and FY2023 have almost identical EPS (9.65 vs 9.68), so their curves
+# nearly coincide -- distinct line types keep both visible, and drawing in
+# reverse order puts FY2022 on top.
+png("msft_curve_R.png", width = 1000, height = 700, res = 120)
 cols <- c("#2E86AB", "#A23B72", "#F18F01", "#C73E1D")
+ltys <- c(1, 2, 1, 1)
 
 plot(NULL, xlim = c(0, 1), ylim = c(0, max(msft$price) * 2.2),
      xlab = "Plowback ratio  b", ylab = "Price  P ($)",
      main = "MSFT pricing curves   P(b) = E * shape(b)")
-for (i in seq_len(nrow(msft))) {
+for (i in rev(seq_len(nrow(msft)))) {
   curve(curve_P(x, msft$eps[i], r, a0, ab), from = 0.01, to = 0.97,
-        add = TRUE, col = cols[i], lwd = 2)
+        add = TRUE, col = cols[i], lwd = 2, lty = ltys[i])
   points(msft$b[i], msft$price[i], pch = 19, col = cols[i], cex = 1.3)
 }
-abline(v = b_star, lty = 2, col = "gray40")
+abline(v = b_star, lty = 3, col = "gray40")
 legend("topleft", bty = "n",
        legend = c(paste0("FY", msft$year), sprintf("b* = %.3f", b_star)),
-       col = c(cols, "gray40"), lwd = c(rep(2, 4), 1), lty = c(rep(1, 4), 2))
+       col = c(cols, "gray40"), lwd = c(rep(2, 4), 1), lty = c(ltys, 3))
+invisible(dev.off())
 
+# ---- Plot 2: per-year residual l (management-perceived (dis)advantage) -----
+png("msft_residuals_R.png", width = 700, height = 500, res = 120)
 bar_cols <- ifelse(msft$l > 0, "#C0392B", "#1E8449")
 bp <- barplot(msft$l, names.arg = paste0("FY", msft$year), col = bar_cols,
-              ylab = "Residual  l", main = "Per-year residual l\n(management-perceived (dis)advantage)")
+              ylab = "Residual  l",
+              main = "Per-year residual l\n(management-perceived (dis)advantage)")
 abline(h = 0)
 text(bp, msft$l, sprintf("%+.4f", msft$l), pos = ifelse(msft$l > 0, 3, 1), cex = 0.8)
-
 invisible(dev.off())
