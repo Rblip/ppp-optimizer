@@ -14,6 +14,17 @@ curve_P <- function(b, E, r, a0, ab) {
   E * (1 - b) / (r - b * (r + a))
 }
 
+# Per-period residual l: gap between the fitted reinvestment premium
+# a_fitted = a0*(1 - b/ab) and the premium a_required that would price
+# the stock exactly at the observed (b, P). l > 0 means the curve
+# overestimates the premium ("management discounts retained earnings");
+# l < 0 means management reveals an above-curve reinvestment view.
+residual_l <- function(b, P, E, r, a0, ab) {
+  a_required <- (1 - b) * (r * P - E) / (b * P)
+  a_fitted   <- a0 * (1 - b / ab)
+  a_fitted - a_required
+}
+
 # ---- Pull MSFT annual fundamentals + fiscal-year-end prices from Yahoo -----
 fetch_msft_panel <- function(ticker = "MSFT") {
   now <- as.integer(Sys.time())
@@ -92,11 +103,18 @@ a0 <- fit$par[1]; ab <- fit$par[2]; r <- fit$par[3]
 b_grid <- seq(0.01, 0.99, length.out = 2000)
 b_star <- b_grid[which.max(curve_P(b_grid, E = 1, r, a0, ab))]
 
-cat(sprintf("\na0 = %.4f   ab = %.4f   r = %.4f   b* = %.4f\n", a0, ab, r, b_star))
+# Per-year diagnostic residual l (management-sentiment signal)
+msft$l <- residual_l(msft$b, msft$price, msft$eps, r, a0, ab)
 
-# ---- Plot: each year's curve P(b) = E * shape(b), observations, shared b* --
-png("msft_curve_R.png", width = 1000, height = 700, res = 120)
+cat(sprintf("\na0 = %.4f   ab = %.4f   r = %.4f   b* = %.4f\n", a0, ab, r, b_star))
+cat("\nPer-year residuals l:\n")
+print(msft[, c("year", "b", "price", "l")], row.names = FALSE)
+
+# ---- Plot: pricing curves (left) and per-year residuals l (right) ----------
+png("msft_curve_R.png", width = 1400, height = 700, res = 120)
+par(mfrow = c(1, 2))
 cols <- c("#2E86AB", "#A23B72", "#F18F01", "#C73E1D")
+
 plot(NULL, xlim = c(0, 1), ylim = c(0, max(msft$price) * 2.2),
      xlab = "Plowback ratio  b", ylab = "Price  P ($)",
      main = "MSFT pricing curves   P(b) = E * shape(b)")
@@ -109,4 +127,11 @@ abline(v = b_star, lty = 2, col = "gray40")
 legend("topleft", bty = "n",
        legend = c(paste0("FY", msft$year), sprintf("b* = %.3f", b_star)),
        col = c(cols, "gray40"), lwd = c(rep(2, 4), 1), lty = c(rep(1, 4), 2))
+
+bar_cols <- ifelse(msft$l > 0, "#C0392B", "#1E8449")
+bp <- barplot(msft$l, names.arg = paste0("FY", msft$year), col = bar_cols,
+              ylab = "Residual  l", main = "Per-year residual l\n(management-perceived (dis)advantage)")
+abline(h = 0)
+text(bp, msft$l, sprintf("%+.4f", msft$l), pos = ifelse(msft$l > 0, 3, 1), cex = 0.8)
+
 invisible(dev.off())
