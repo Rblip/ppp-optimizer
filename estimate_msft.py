@@ -54,7 +54,7 @@ import pandas as pd
 import yfinance as yf
 from scipy.optimize import differential_evolution
 
-from curve_model import curve_P, compute_residual
+from curve_model import curve_P, l_from_b, b_star_from_l
 
 
 # ============================================================================
@@ -241,19 +241,16 @@ def fit_curve(ticker: str,
     rel_resid = (P_fit - p_) / p_
     rmse_rel  = float(np.sqrt(np.mean(rel_resid ** 2)))
 
-    # Per-year residual l = management's perceived disadvantage of b
-    l_vals = np.array([compute_residual(float(b_[i]), float(p_[i]), float(E_[i]),
-                                         r_hat, a0_hat, ab_hat)
-                       for i in range(n)])
+    # Per-year sentiment residual l, read directly off each year's CHOSEN b
+    # (closed-form inversion of the optimal-b relationship — see curve_model):
+    #   l > 0  ->  b below b*  ->  perceived disadvantage  (retains less)
+    #   l < 0  ->  b above b*  ->  perceived advantage     (retains more)
+    l_vals = l_from_b(b_, a0_hat, ab_hat)
     a_fitted   = a0_hat * (1.0 - b_ / ab_hat)
     a_required = a_fitted - l_vals
 
-    # b* = argmax P(b) — independent of E, since E only scales the curve
-    b_grid = np.linspace(0.01, 0.99, 3000)
-    a_grid = a0_hat * (1.0 - b_grid / ab_hat)
-    denom  = r_hat - b_grid * (r_hat + a_grid)
-    shape  = np.where(denom > 1e-8, (1.0 - b_grid) / denom, np.nan)
-    b_star = float(b_grid[np.nanargmax(shape)])
+    # b* = b*(l = 0) — the curve's true optimum, identical for every year
+    b_star = float(b_star_from_l(0.0, a0_hat, ab_hat))
 
     return {
         "ticker":     ticker,

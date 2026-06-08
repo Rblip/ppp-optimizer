@@ -68,6 +68,40 @@ def compute_residual(b: float,
     return a0 * (1.0 - b / ab) - a_required
 
 
+def b_star_from_l(l: float | np.ndarray,
+                  a0: float,
+                  ab: float) -> float | np.ndarray:
+    """
+    Closed-form value-maximising plowback under management's PERCEIVED
+    curve a(b) = a0*(1 - b/ab) - l (i.e. solving d/db P(b) = 0):
+
+        b*(l) = 1 - sqrt(1 - ab * (1 - l/a0))
+
+    At l = 0 this is the curve's true optimum b*.
+    """
+    return 1.0 - np.sqrt(1.0 - ab * (1.0 - l / a0))
+
+
+def l_from_b(b: float | np.ndarray,
+             a0: float,
+             ab: float) -> float | np.ndarray:
+    """
+    Inverse of b_star_from_l: read the sentiment residual l directly off an
+    OBSERVED plowback b, by treating that choice as revealed-optimal under
+    management's own perceived curve:
+
+        l(b) = a0 * (1 - b*(2 - b) / ab)
+
+    l > 0  ->  b sits below the true optimum b* — management perceives a
+               disadvantage in retaining (and so retains less than the
+               curve alone would reward).
+    l < 0  ->  b sits above b* — management perceives an advantage in
+               retaining (and so retains more).
+    """
+    b = np.asarray(b, dtype=float)
+    return a0 * (1.0 - b * (2.0 - b) / ab)
+
+
 def is_on_curve(b: float,
                 p: float,
                 E: float,
