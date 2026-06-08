@@ -113,7 +113,9 @@ def figure_curve(panel, result) -> str:
            Observed prices as filled dots; trajectory arrow from FY2022→FY2025
            shows the curve scaling up with EPS growth.
 
-    Right: a(b) fitted line with per-year residuals (now nearly on-curve).
+    Right: a(b) fitted line with each year's perceived reinvestment premium
+           a_required = a(b) − l, connected to the curve by a coloured segment
+           whose length is the sentiment residual l for that year.
     """
     a0, ab, r = result["a0"], result["ab"], result["r"]
     b_star    = result["b_star"]
@@ -204,8 +206,8 @@ def figure_curve(panel, result) -> str:
 
     ax2.set_xlabel("Plowback ratio  b", fontsize=9)
     ax2.set_ylabel("Reinvestment premium  a(b)", fontsize=9)
-    ax2.set_title("Adaptive Parameter  a(b)  with Residuals  l", fontsize=10,
-                  fontweight="bold", color="#1B3A6B")
+    ax2.set_title("Adaptive Parameter  a(b)  —  True vs. Perceived Premium",
+                  fontsize=10, fontweight="bold", color="#1B3A6B")
     ax2.legend(fontsize=8, framealpha=0.85)
     ax2.grid(True, alpha=0.25, lw=0.6)
     ax2.tick_params(labelsize=8)
@@ -215,9 +217,11 @@ def figure_curve(panel, result) -> str:
 
 
 def figure_sentiment(panel, result) -> str:
-    """Bar chart of l by fiscal year — now an order of magnitude smaller
-    than under the blended-r specification, since the corrected curve
-    leaves little unexplained variation in the observed prices."""
+    """Bar chart of l by fiscal year — read directly off each year's chosen
+    plowback b via the closed-form inversion l(b) = a0*(1 - b*(2-b)/ab). The
+    residual swings from strongly positive (FY2022, perceived disadvantage,
+    low retention) to negative (FY2025, perceived advantage, high retention),
+    a monotonic trend that tracks MSFT's AI-investment pivot."""
     years = [f"FY{y}" for y in panel["date"].dt.year.tolist()]
     l_vals = result["residuals"]
     bar_colors = ["#C0392B" if l > 1e-4 else "#1E8449" if l < -1e-4
@@ -239,9 +243,9 @@ def figure_sentiment(panel, result) -> str:
                 fontsize=8.5, fontweight="bold",
                 color="#C0392B" if val > 1e-4 else "#1E8449")
 
-    ax.set_ylabel("Residual  l  (management perceived disadvantage)", fontsize=9)
-    ax.set_title("Per-Year Residuals — Essentially Negligible Under the\n"
-                 "Corrected (Estimated-r) Specification", fontsize=10,
+    ax.set_ylabel("Residual  l  (read off observed plowback b)", fontsize=9)
+    ax.set_title("Per-Year Sentiment Residual  l\n"
+                 "Implied by the Firm's Chosen Plowback b", fontsize=10,
                  fontweight="bold", color="#1B3A6B")
     ax.grid(True, axis="y", alpha=0.25, lw=0.6)
     ax.tick_params(labelsize=9)
@@ -429,12 +433,13 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
             "function of its plowback (earnings-retention) ratio <i>b</i>, with the "
             "discount rate and reinvestment premium both determined from observed "
             "fundamentals. "
-            "A per-period residual <i>l</i> captures the gap between the theoretical "
-            "curve and the observed price, and is interpreted as "
-            "<b>management's perceived disadvantage of the current plowback level</b>: "
-            "positive when management implicitly discounts the return on retained "
-            "earnings, negative when they perceive an above-curve reinvestment "
-            "opportunity."
+            "A per-period residual <i>l</i> is read directly off each year's "
+            "<b>chosen</b> plowback ratio — by treating that choice as "
+            "revealed-optimal under management's own, possibly biased, perceived "
+            "curve — and is interpreted as <b>management's perceived (dis)advantage "
+            "of retaining earnings</b>: positive when the firm retains less than "
+            "the true curve would reward (a perceived disadvantage), negative when "
+            "it retains more (a perceived advantage)."
         ),
         SP(0.3),
         P(
@@ -449,9 +454,13 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
             "together. Because earnings enter the curve only as a multiplicative "
             "scale factor, <b>b* is identical across every fiscal year</b> — a "
             "structural property of the firm rather than a year-specific artifact. "
-            "The per-year residuals l shrink to magnitudes of ~0.0001–0.0002, "
-            "confirming that the corrected, single-rate specification leaves "
-            "essentially nothing unexplained."
+            "Read off each year's chosen b, the sentiment residual l moves "
+            f"<b>monotonically from {l_vals[0]:+.3f} in FY{years[0]} to "
+            f"{l_vals[-1]:+.3f} in FY{years[-1]}</b> — from a perceived "
+            "disadvantage in retaining earnings (low plowback, heavy buybacks) "
+            "to a perceived advantage (high plowback, AI-infrastructure "
+            "build-out), a trend that lines up cleanly with MSFT's well-documented "
+            "pivot toward AI investment over this period."
         ),
         SP(0.5),
     ]
@@ -517,23 +526,39 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
             f"b* = {b_star:.3f} lands inside MSFT's actually observed range."
         ),
         SP(0.3),
-        P("2.4  The Residual  l  —  Management's Perceived Disadvantage", "h2"),
+        P("2.4  The Residual  l  —  Management's Perceived (Dis)advantage", "h2"),
         P(
-            "Inverting the pricing formula for a given observation (bₜ, Pₜ) yields "
-            "the reinvestment premium that would be <i>required</i> to price the "
-            "stock exactly:"
+            "Suppose management does not see the <i>true</i> reinvestment premium "
+            "a₀·(1 − b/aᵦ), but its own, possibly biased, <i>perceived</i> version "
+            "a(b) = a₀·(1 − b/aᵦ) − l, and chooses its plowback b to maximise its "
+            "own (perceived) curve. Solving dP/db = 0 under that perceived curve "
+            "gives a closed-form link between the chosen plowback and the "
+            "perception gap l:"
         ),
         SP(0.2),
-        P("a_required  =  (Pₜ · rₜ − E · (1 − bₜ)) / (Pₜ · bₜ)  −  rₜ", "mono"),
+        P("b*(l)  =  1 − √( 1 − aᵦ · (1 − l / a₀) )", "mono"),
         SP(0.2),
         P(
-            "The residual is then  l  =  a₀ · (1 − bₜ / aᵦ) − a_required. "
-            "A <b>positive l</b> means the fitted curve overestimates the "
-            "reinvestment premium — management is discounting the return on "
-            "the retained portion, signalling a perceived <b>disadvantage</b> "
-            "in the chosen plowback level. "
-            "A <b>negative l</b> indicates management believes reinvestment "
-            "earns <i>above</i> the theoretical curve — a perceived <b>advantage</b>."
+            "At l = 0 this is the curve's <i>true</i> optimum b* — the same for "
+            "every year, since (a₀, aᵦ) are firm-specific constants. Inverting "
+            "this relationship lets us read l directly off each year's "
+            "<b>observed</b> plowback choice bₜ — i.e. treat that choice as "
+            "revealed-optimal under management's own perceived curve, and back "
+            "out the perception gap that would make it so:"
+        ),
+        SP(0.2),
+        P("l(bₜ)  =  a₀ · ( 1 − bₜ·(2 − bₜ) / aᵦ )", "mono"),
+        SP(0.2),
+        P(
+            "A <b>positive l</b> means bₜ sits <i>below</i> the true optimum b* — "
+            "management retains less than the curve would reward, signalling a "
+            "perceived <b>disadvantage</b> in reinvestment. "
+            "A <b>negative l</b> means bₜ sits <i>above</i> b* — management "
+            "retains more than the curve alone implies, signalling a perceived "
+            "<b>advantage</b>. Unlike a price-based residual, this l is a direct "
+            "read-out of management's revealed capital-allocation conviction, "
+            "estimated independently of how well the curve happens to fit that "
+            "year's price."
         ),
         SP(0.5),
     ]
@@ -552,7 +577,7 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
     impl_rows = [
         ["Module", "Purpose"],
         ["curve_model.py",
-         "Core mathematics: curve_P(), compute_a(), compute_residual(), is_on_curve()"],
+         "Core mathematics: curve_P(), compute_a(), b_star_from_l(), l_from_b()"],
         ["yahoo_curve.py",
          "Yahoo Finance fetch (EP, ROI via yfinance); compute_r() blend "
          "(retained for narrative contrast only — not used by the fitted model)"],
@@ -579,10 +604,11 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
           "(a₀, aᵦ, r) subject to a₀, aᵦ ∈ [0, 1] and r ∈ [0.01, 0.50] using "
           "<i>scipy.optimize.differential_evolution</i> (global optimiser, "
           "avoiding local minima).", "bullet"),
-        P("4.  Invert the fitted curve at each (bₜ, Pₜ) via "
-          "<i>compute_residual()</i> to obtain the per-year diagnostic "
-          "residual lₜ — now a check on the spec's adequacy rather than a "
-          "primary estimation target.", "bullet"),
+        P("4.  Read the per-year sentiment residual lₜ directly off each "
+          "year's chosen plowback bₜ via the closed-form inversion "
+          "<i>l_from_b()</i> — treating bₜ as revealed-optimal under "
+          "management's own perceived curve — and recover the firm's true "
+          "optimum b* = b*(l = 0) via <i>b_star_from_l()</i>.", "bullet"),
         SP(0.5),
     ]
 
@@ -665,10 +691,10 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
             "its value-maximising policy."
         ),
         SP(0.3),
-        P("5.2  Per-Year Residuals — A Validation Check", "h2"),
+        P("5.2  Per-Year Sentiment Residual  l  — Reading Conviction off  b", "h2"),
     ]
 
-    resid_rows = [["FY", "b", "P observed", "P fitted", "rel err (%)", "l (diagnostic)"]]
+    resid_rows = [["FY", "b", "P observed", "P fitted", "rel err (%)", "l (sentiment)"]]
     for i, row in panel.iterrows():
         l_i = l_vals[i]
         resid_rows.append([
@@ -702,19 +728,24 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
 
     story += [
         P(
-            f"Across all four fiscal years, the model reproduces observed prices "
-            f"to within {float(np.max(np.abs(result['rel_resid'])))*100:.2f}% and the "
-            "diagnostic residuals l shrink to magnitudes of roughly 0.0001–0.0002 — "
-            "an order of magnitude smaller than under the earlier blended-rate "
-            "specification (where l ranged up to ±0.016). This is the signature of "
-            "a <b>correctly specified curve</b>: once the discount rate is freed "
-            "from its mechanical dependence on b, the model leaves essentially "
-            "nothing for a per-year 'management sentiment' term to explain. The "
-            "earlier narrative — reading l as a signal of management's perceived "
-            "advantage or disadvantage in retained-earnings reinvestment — was "
-            "largely an artifact of mis-specifying r; with r corrected, the "
-            "residuals validate the specification rather than carrying their own "
-            "story."
+            f"Read directly off each year's chosen plowback bₜ via "
+            f"l(bₜ) = a₀·(1 − bₜ·(2−bₜ)/aᵦ), the residual traces a clean, "
+            f"<b>monotonic trajectory</b>: from a strongly positive "
+            f"l = {l_vals[0]:+.3f} in FY{years[0]} — when MSFT retained only "
+            f"{result['b_used'][0]*100:.0f}% of earnings amid a large buyback "
+            f"programme, well below its true optimum b* = {b_star:.3f} and so "
+            f"signalling a perceived <b>disadvantage</b> in reinvestment — "
+            f"through l = {l_vals[1]:+.3f} in FY{years[1]}, to "
+            f"<b>negative</b> values of l = {l_vals[2]:+.3f} in FY{years[2]} "
+            f"and l = {l_vals[3]:+.3f} in FY{years[3]}, when plowback rose to "
+            f"{result['b_used'][3]*100:.0f}% — above b* — signalling a "
+            "perceived <b>advantage</b>. This progression tracks MSFT's "
+            "well-documented pivot toward AI infrastructure (Azure capacity "
+            "build-out, the OpenAI partnership, Copilot rollout, and a sharp "
+            "rise in capital expenditure): as conviction in the reinvestment "
+            "opportunity grew, management's revealed plowback choice moved from "
+            "below its curve-implied optimum to above it — exactly what a "
+            "shrinking, then sign-flipping, sentiment residual should show."
         ),
         SP(0.3),
         P("5.3  Why b* Is the Same Every Year — A Structural Property", "h2"),
@@ -767,8 +798,13 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
             "the dashed line marks b*, identical for every year. The arrow traces "
             "MSFT's path as EPS grew ×1.41 from FY2022 to FY2025 — the curve scales "
             "upward together with the rise in b, so price and plowback rise in tandem. "
-            "Right: the fitted reinvestment premium a(b) = a₀·(1 − b/aᵦ) with the "
-            "tiny per-year residuals l (vertical segments, barely visible at this scale).",
+            "Right: the fitted (true) reinvestment premium a(b) = a₀·(1 − b/aᵦ) "
+            "(blue) against each year's <i>perceived</i> premium a_required = "
+            "a(b) − l (coloured dots), connected by a vertical segment whose "
+            "length and colour encode that year's sentiment residual l — red "
+            "below the curve (perceived disadvantage, l > 0, management "
+            "discounts the reinvestment return), green above it (perceived "
+            "advantage, l < 0).",
             "caption",
         ),
         SP(0.6),
@@ -778,11 +814,13 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
     story += [
         Image(fig2_path, width=TEXT_W * 0.62, height=TEXT_W * 0.62 * 3.5 / 7),
         P(
-            "<b>Figure 2.</b>  Per-year diagnostic residuals l, now an order of "
-            "magnitude smaller than under the blended-rate specification (≤ 0.0002 "
-            "vs. up to ±0.016 previously). The near-zero bars confirm that the "
-            "corrected, constant-r curve leaves essentially nothing for a per-year "
-            "'sentiment' term to explain.",
+            "<b>Figure 2.</b>  Per-year sentiment residual l, read directly off "
+            "each year's chosen plowback b via l(b) = a₀·(1 − b·(2−b)/aᵦ). The "
+            "bars trace a clean, monotonic swing from a strongly positive "
+            f"l = {l_vals[0]:+.3f} in FY{years[0]} (b well below b*, perceived "
+            f"disadvantage) to a negative l = {l_vals[-1]:+.3f} in FY{years[-1]} "
+            "(b above b*, perceived advantage) — a trajectory that lines up "
+            "with MSFT's growing conviction in its AI-investment opportunity.",
             "caption",
         ),
         SP(0.6),
@@ -845,12 +883,18 @@ def build_report(panel, result, output="msft_curve_report.pdf"):
             "every fiscal year</b>: a structural property of the firm fixed by "
             "(a₀, aᵦ, r), not a year-specific artifact. This also explains why "
             "b and P rose together: each year's curve is the same shape, merely "
-            "rescaled upward by that year's EPS growth. Finally, the per-year "
-            "diagnostic residuals l shrink to ~0.0001–0.0002 — an order of "
-            "magnitude smaller than under the blended-rate fit — confirming that "
-            "the corrected, single-constant-r specification leaves essentially "
-            "nothing unexplained. MSFT's heavy reinvestment is not over-retention; "
-            "it is the firm operating close to its own value-maximising policy."
+            "rescaled upward by that year's EPS growth. Finally, reading the "
+            "sentiment residual l directly off each year's chosen plowback — via "
+            "the closed-form inversion of management's own perceived optimum, "
+            f"l(b) = a₀·(1 − b·(2−b)/aᵦ) — reveals a clean, monotonic swing from "
+            f"l = {l_vals[0]:+.3f} in FY{years[0]} to l = {l_vals[-1]:+.3f} in "
+            f"FY{years[-1]}: management moved from perceiving a disadvantage in "
+            "reinvestment (retaining below the curve's optimum, amid heavy "
+            "buybacks) to perceiving an advantage (retaining above it, as AI "
+            "infrastructure investment surged). MSFT's heavy reinvestment is not "
+            "over-retention; it is the firm's revealed conviction converging on, "
+            "and then exceeding, its own value-maximising policy as its AI "
+            "opportunity became clearer."
         ),
         SP(0.5),
         rule(),
