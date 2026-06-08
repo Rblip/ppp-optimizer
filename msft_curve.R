@@ -14,16 +14,21 @@ curve_P <- function(b, E, r, a0, ab) {
   E * (1 - b) / (r - b * (r + a))
 }
 
-# Per-period residual l: gap between the fitted reinvestment premium
-# a_fitted = a0*(1 - b/ab) and the premium a_required that would price
-# the stock exactly at the observed (b, P). l > 0 means the curve
-# overestimates the premium ("management discounts retained earnings");
-# l < 0 means management reveals an above-curve reinvestment view.
-residual_l <- function(b, P, E, r, a0, ab) {
-  a_required <- (1 - b) * (r * P - E) / (b * P)
-  a_fitted   <- a0 * (1 - b / ab)
-  a_fitted - a_required
-}
+# Closed-form link between the firm's chosen plowback b and the perceived-
+# disadvantage residual l. If management maximises its OWN (perceived)
+# curve, using perceived reinvestment return a(b) = a0*(1 - b/ab) - l rather
+# than the true a0*(1 - b/ab), the optimal b solves d/db P = 0, giving:
+#
+#   b*(l) = 1 - sqrt(1 - ab * (1 - l/a0))
+#
+# Inverting this lets us read l directly off an OBSERVED b — i.e. treat the
+# firm's actual plowback choice as revealed-optimal under its own perceived
+# curve, and back out the perception gap that would make it so:
+#
+#   l(b)  = a0 * (1 - b*(2 - b) / ab)
+b_from_l <- function(l, a0, ab) 1 - sqrt(1 - ab * (1 - l / a0))
+l_from_b <- function(b, a0, ab) a0 * (1 - b * (2 - b) / ab)
+
 
 # ---- Pull MSFT annual fundamentals + fiscal-year-end prices from Yahoo -----
 fetch_msft_panel <- function(ticker = "MSFT") {
@@ -99,12 +104,16 @@ fits <- lapply(seq_len(nrow(starts)), function(i)
 fit <- fits[[which.min(sapply(fits, `[[`, "value"))]]
 a0 <- fit$par[1]; ab <- fit$par[2]; r <- fit$par[3]
 
-# b* — value-maximising plowback (shape is identical for every year)
-b_grid <- seq(0.01, 0.99, length.out = 2000)
-b_star <- b_grid[which.max(curve_P(b_grid, E = 1, r, a0, ab))]
+# b* = b*(l = 0) — value-maximising plowback under the TRUE curve
+# (shape is identical for every year, since E only rescales it)
+b_star <- b_from_l(0, a0, ab)
 
-# Per-year diagnostic residual l (management-sentiment signal)
-msft$l <- residual_l(msft$b, msft$price, msft$eps, r, a0, ab)
+# Per-year sentiment residual l, read directly off each year's CHOSEN b:
+# l > 0  -> b sits below b* -> management perceives a disadvantage in
+#           retaining (and so retains less than the curve would reward)
+# l < 0  -> b sits above b* -> management perceives an advantage in
+#           retaining (and so retains more than the curve alone implies)
+msft$l <- l_from_b(msft$b, a0, ab)
 
 cat(sprintf("\na0 = %.4f   ab = %.4f   r = %.4f   b* = %.4f\n", a0, ab, r, b_star))
 cat("\nPer-year residuals l:\n")
@@ -135,9 +144,11 @@ invisible(dev.off())
 # ---- Plot 2: per-year residual l (management-perceived (dis)advantage) -----
 png("msft_residuals_R.png", width = 700, height = 500, res = 120)
 bar_cols <- ifelse(msft$l > 0, "#C0392B", "#1E8449")
+pad <- max(abs(msft$l)) * 0.3
 bp <- barplot(msft$l, names.arg = paste0("FY", msft$year), col = bar_cols,
-              ylab = "Residual  l",
-              main = "Per-year residual l\n(management-perceived (dis)advantage)")
+              ylim = range(msft$l) + c(-pad, pad),
+              ylab = "Residual  l  (read off observed b)",
+              main = "Per-year sentiment residual l\nimplied by the firm's chosen plowback b")
 abline(h = 0)
 text(bp, msft$l, sprintf("%+.4f", msft$l), pos = ifelse(msft$l > 0, 3, 1), cex = 0.8)
 invisible(dev.off())
